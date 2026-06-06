@@ -13,7 +13,6 @@ dependencies = [
     "scipy",
     "scikit-image",
     "tifffile",
-    "ndv[vispy,pyqt]",
     "rich",
 ]
 
@@ -21,7 +20,8 @@ dependencies = [
 test = ["pytest"]
 
 [project.optional-dependencies]
-jup = ["ndv[vispy,jupyter]", "jupyter-rfb<=0.5.4"]
+ndv = ["ndv[vispy]"]
+ndv-jup = ["ndv[vispy,jupyter]", "jupyter-rfb<=0.5.4"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/microcal"]

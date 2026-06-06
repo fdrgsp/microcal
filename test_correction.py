@@ -32,7 +32,7 @@ sc = ChromaticShiftCorrector(
     refine_radius=2,
 )
 
-results = sc.measure(img, show=True)
+results = sc.measure(img)
 
 print(results)
 

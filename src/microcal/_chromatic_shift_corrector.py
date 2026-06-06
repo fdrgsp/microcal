@@ -51,6 +51,12 @@ class CorrectionResult:
 
     reference_channel: int
     transforms: dict[int, ChannelTransform] = field(default_factory=dict)
+    # Set by measure(show=True): (2*C, H, W) float32 — interleaved normalised
+    # images and filled-disk bead masks for every channel.
+    detection_image: NDArray | None = None
+    # Set by measure(show=True): (H, W) int32 label image — each matched bead
+    # group shares the same non-zero integer; use a Glasbey LUT to visualise.
+    pairs_image: NDArray | None = None
 
     def __repr__(self) -> str:
         lines = [f"CorrectionResult(reference={self.reference_channel})"]
@@ -155,7 +161,6 @@ class ChromaticShiftCorrector:
         bead_stack: NDArray,
         *,
         transform_type: str = "affine",
-        show: bool = False,
     ) -> CorrectionResult:
         """
         Estimate the chromatic shift from a multi-channel bead image.
@@ -167,20 +172,19 @@ class ChromaticShiftCorrector:
         transform_type : str
             Type of transform to fit: 'affine' (default), 'similarity',
             'euclidean', or 'translation'.
-        show : bool
-            If True, open two interactive ndv windows after fitting:
-
-            * **Detection** — normalised image for every channel with detected
-              bead positions overlaid as filled-disk masks.  Channels are
-              interleaved: ``[img_ch0, beads_ch0, img_ch1, beads_ch1, ...]``.
-            * **Pairs** — single ``(H, W)`` integer label image where every
-              bead in a matched group shares the same label.  Apply a Glasbey
-              LUT in ndv to see which beads correspond across channels.
 
         Returns
         -------
         CorrectionResult
-            Contains one ChannelTransform per non-reference channel.
+            Contains one ChannelTransform per non-reference channel, plus
+            visualisation arrays always populated:
+
+            * ``result.detection_image`` — ``(2*C, H, W)`` float32 with
+              normalised channel images and filled-disk bead masks interleaved:
+              ``[img_ch0, beads_ch0, img_ch1, beads_ch1, ...]``.
+            * ``result.pairs_image`` — ``(H, W)`` int32 label image where
+              every bead in a matched group shares the same non-zero integer.
+              Display with a Glasbey LUT (e.g. ``ndv.imshow(result.pairs_image)``).
         """
         if bead_stack.ndim != 3:
             raise ValueError("bead_stack must be 3-D (C, H, W)")
@@ -244,9 +248,8 @@ class ChromaticShiftCorrector:
         self._result = result
         self._bead_stack = bead_stack
 
-        if show:
-            self._show_detections(bead_stack, all_centers)
-            self._show_pairs(bead_stack, all_pairs, ref_ch)
+        result.detection_image = self._build_detection_image(bead_stack, all_centers)
+        result.pairs_image = self._build_pairs_image(bead_stack, all_pairs)
 
         return result
 
@@ -587,45 +590,32 @@ class ChromaticShiftCorrector:
         return self._result
 
     # ------------------------------------------------------------------
-    # Visualisation helpers (require ndv; lazy import to keep it optional)
+    # Visualisation array builders (no display dependency)
     # ------------------------------------------------------------------
 
-    def _show_detections(
+    def _build_detection_image(
         self,
         bead_stack: NDArray,
         centers_per_ch: dict[int, NDArray],
-    ) -> None:
-        """Open an ndv window with normalised images and bead masks interleaved."""
-        import ndv
-
+    ) -> NDArray:
+        """Return (2*C, H, W) float32: interleaved normalised images and bead masks."""
         C, H, W = bead_stack.shape
         vis = np.zeros((2 * C, H, W), dtype=np.float32)
         for ch in range(C):
             vis[2 * ch] = self._normalise(bead_stack[ch]).astype(np.float32)
             if ch in centers_per_ch and len(centers_per_ch[ch]) > 0:
                 vis[2 * ch + 1] = self._make_bead_mask(H, W, centers_per_ch[ch])
-        ndv.imshow(vis)
+        return vis
 
-    def _show_pairs(
+    def _build_pairs_image(
         self,
         bead_stack: NDArray,
         pairs_per_ch: dict[int, tuple[NDArray, NDArray]],
-        ref_ch: int,
-    ) -> None:
-        """Open an ndv window with a single integer label image — use Glasbey LUT.
-
-        All bead positions that belong to the same matched group (one ref bead
-        and its counterparts in every non-reference channel) share the same
-        non-zero integer.  Apply a Glasbey LUT: each colour = one physical bead
-        group, so misregistered beads appear as same-coloured dots at slightly
-        different positions.
-        """
-        import ndv
-
+    ) -> NDArray:
+        """Return (H, W) int32: matched bead groups share a non-zero integer label."""
         _, H, W = bead_stack.shape
         labels = np.zeros((H, W), dtype=np.int32)
         radius = max(2, round(self.smooth_sigma))
-
         ref_to_label: dict[tuple[int, int], int] = {}
         next_label = 1
         for ch, (src, dst) in pairs_per_ch.items():
@@ -637,8 +627,7 @@ class ChromaticShiftCorrector:
                 lbl = ref_to_label[key]
                 self._paint_disk(labels, int(round(s[0])), int(round(s[1])), radius, lbl)
                 self._paint_disk(labels, int(round(d[0])), int(round(d[1])), radius, lbl)
-
-        ndv.imshow(labels)
+        return labels
 
     def _make_bead_mask(self, H: int, W: int, centers: NDArray) -> NDArray:
         mask = np.zeros((H, W), dtype=np.float32)
