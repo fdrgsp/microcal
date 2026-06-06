@@ -10,6 +10,7 @@ Workflow
 
 from __future__ import annotations
 
+import logging
 import warnings
 from dataclasses import dataclass, field
 
@@ -25,6 +26,8 @@ from skimage.transform import (
     SimilarityTransform,
     warp,
 )
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Data container for a single channel-to-reference transform
@@ -200,7 +203,7 @@ class ChromaticShiftCorrector:
         ref_img = self._normalise(bead_stack[ref_ch])
         ref_centers = self._detect_beads(ref_img)
         all_centers[ref_ch] = ref_centers
-        print(f"[measure] ch{ref_ch} (reference): {len(ref_centers)} beads detected")
+        logger.info("ch%d (reference): %d beads detected", ref_ch, len(ref_centers))
 
         for ch in range(n_channels):
             if ch == ref_ch:
@@ -217,11 +220,21 @@ class ChromaticShiftCorrector:
                 coarse_shift = ref_centers.mean(axis=0) - mov_centers.mean(axis=0)
             else:
                 coarse_shift = np.zeros(2)
-            print(f"[measure] ch{ch}: {len(mov_centers)} beads detected  |  coarse shift (row, col) = {np.round(coarse_shift, 2)}")
+            logger.info(
+                "ch%d: %d beads detected | coarse shift (row, col) = %s",
+                ch,
+                len(mov_centers),
+                np.round(coarse_shift, 2),
+            )
 
             src, dst = self._match_beads(ref_centers, mov_centers, coarse_shift)
             all_pairs[ch] = (src, dst)
-            print(f"[measure] ch{ch}: {len(src)} bead pairs matched (max_distance={self.match_max_distance}px)")
+            logger.info(
+                "ch%d: %d bead pairs matched (max_distance=%.1fpx)",
+                ch,
+                len(src),
+                self.match_max_distance,
+            )
 
             if len(src) < self.min_pairs:
                 warnings.warn(
@@ -235,7 +248,12 @@ class ChromaticShiftCorrector:
             else:
                 tform, rms = self._fit_transform(src, dst, transform_type)
                 n_pairs = len(src)
-                print(f"[measure] ch{ch}: fit RMS = {rms:.3f}px  transform =\n{tform.params}")
+                logger.info(
+                    "ch%d: fit RMS = %.3fpx  transform =\n%s",
+                    ch,
+                    rms,
+                    tform.params,
+                )
 
             result.transforms[ch] = ChannelTransform(
                 channel=ch,
@@ -532,7 +550,7 @@ class ChromaticShiftCorrector:
         }
         cls = _TFORM_CLASSES.get(transform_type, AffineTransform)
 
-        src_xy = src[:, ::-1]   # (row, col) → (col, row) = (x, y)
+        src_xy = src[:, ::-1]  # (row, col) → (col, row) = (x, y)
         dst_xy = dst[:, ::-1]
 
         tform, inliers = ransac(
@@ -548,7 +566,9 @@ class ChromaticShiftCorrector:
             inliers = np.ones(len(src), dtype=bool)
 
         predicted = tform(dst_xy[inliers])
-        rms = float(np.sqrt(np.mean(np.sum((predicted - src_xy[inliers]) ** 2, axis=1))))
+        rms = float(
+            np.sqrt(np.mean(np.sum((predicted - src_xy[inliers]) ** 2, axis=1)))
+        )
         return tform, rms
 
     @staticmethod
@@ -580,6 +600,7 @@ class ChromaticShiftCorrector:
     @staticmethod
     def _read_file(path: str) -> NDArray:
         import tifffile
+
         return np.asarray(tifffile.imread(path))
 
     def _resolve_result(self, result: CorrectionResult | None) -> CorrectionResult:
@@ -625,8 +646,12 @@ class ChromaticShiftCorrector:
                     ref_to_label[key] = next_label
                     next_label += 1
                 lbl = ref_to_label[key]
-                self._paint_disk(labels, int(round(s[0])), int(round(s[1])), radius, lbl)
-                self._paint_disk(labels, int(round(d[0])), int(round(d[1])), radius, lbl)
+                self._paint_disk(
+                    labels, int(round(s[0])), int(round(s[1])), radius, lbl
+                )
+                self._paint_disk(
+                    labels, int(round(d[0])), int(round(d[1])), radius, lbl
+                )
         return labels
 
     def _make_bead_mask(self, H: int, W: int, centers: NDArray) -> NDArray:
@@ -637,7 +662,9 @@ class ChromaticShiftCorrector:
         return mask
 
     @staticmethod
-    def _paint_disk(img: NDArray, row: int, col: int, radius: int, value: float) -> None:
+    def _paint_disk(
+        img: NDArray, row: int, col: int, radius: int, value: float
+    ) -> None:
         H, W = img.shape
         for r in range(max(0, row - radius), min(H, row + radius + 1)):
             for c in range(max(0, col - radius), min(W, col + radius + 1)):
@@ -646,16 +673,15 @@ class ChromaticShiftCorrector:
 
     @staticmethod
     def _print_validation(stats: dict[int, dict], ref_ch: int) -> None:
-        print(f"\nValidation report  (reference = channel {ref_ch})")
-        print(
+        header = (
+            f"\nValidation report  (reference = channel {ref_ch})\n"
             f"{'Channel':>8}  {'N pairs':>8}  {'Mean err (px)':>14}  "
-            f"{'Median (px)':>12}  {'Max (px)':>10}  {'Std (px)':>9}"
+            f"{'Median (px)':>12}  {'Max (px)':>10}  {'Std (px)':>9}\n" + "-" * 70
         )
-        print("-" * 70)
-        for ch, s in stats.items():
-            print(
-                f"{ch:>8}  {s['n_pairs']:>8}  {s['mean_error']:>14.3f}  "
-                f"{s['median_error']:>12.3f}  {s['max_error']:>10.3f}  "
-                f"{s['std_error']:>9.3f}"
-            )
-        print()
+        rows = "\n".join(
+            f"{ch:>8}  {s['n_pairs']:>8}  {s['mean_error']:>14.3f}  "
+            f"{s['median_error']:>12.3f}  {s['max_error']:>10.3f}  "
+            f"{s['std_error']:>9.3f}"
+            for ch, s in stats.items()
+        )
+        logger.info("%s\n%s", header, rows)
