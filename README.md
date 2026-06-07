@@ -83,7 +83,7 @@ csc = ChromaticShiftCorrector(
 result = csc.measure(bead_img)
 
 # 4. Validate — re-detects beads in the corrected bead image and reports
-#    the residual displacement. Mean error < 0.3 px is excellent.
+# the residual displacement. Mean error < 0.3 px is excellent.
 val = csc.validate()
 
 # 5. Apply the correction to any sample image
