@@ -66,7 +66,7 @@ logging.basicConfig(level=logging.INFO)
 bead_img = tifffile.imread("beads.tiff")   # e.g. shape (2, 512, 512), uint16
 
 # 2. Create the corrector — tune parameters to your images
-cs = ChromaticShiftCorrector(
+csc = ChromaticShiftCorrector(
     reference_channel=0,
     smooth_sigma=3,
     min_distance=2,
@@ -75,19 +75,20 @@ cs = ChromaticShiftCorrector(
     min_pairs=2,
     subpixel_refine=True,
     refine_radius=2,
+    verbose=True,
 )
 
 # 3. Measure the chromatic shift from the bead image
-result = cs.measure(bead_img)
+result = csc.measure(bead_img)
 print(result)
 
 # 4. Validate — re-detects beads in the corrected bead image and reports
 #    the residual displacement. Mean error < 0.3 px is excellent.
-val = cs.validate()
+val = csc.validate()
 
 # 5. Apply the correction to any sample image
 sample_img = tifffile.imread("sample.tiff")   # same number of channels
-corrected = cs.apply(sample_img, crop=True)
+corrected = csc.apply(sample_img, crop=True)
 tifffile.imwrite("sample_corrected.tiff", corrected)
 ```
 
