@@ -5,9 +5,9 @@
 ## Table of contents
 
 - [Installation](#installation)
-- [Chromatic shift correction](#chromatic-shift-correction)
-  - [Example usage](#example-usage)
-- [API reference](#api-reference)
+- [Chromatic Shift Correction](#chromatic-shift-correction)
+  - [Example Usage](#example-usage)
+- [API Reference](#api-reference)
 
 ## Installation
 
