@@ -1,1 +1,102 @@
 🚧 WIP 🚧
+
+# microcal — microscopy calibration tools
+
+## Installation
+
+### ▶ Using (uv) pip
+
+Install `microcal` directly without cloning (Python 3.10 or greater):
+
+```bash
+(uv) pip install "git+https://github.com/fdrgsp/microcal"
+```
+
+To include the optional [ndv](https://github.com/pyapp-kit/ndv) viewer for displaying images:
+
+```bash
+(uv) pip install "git+https://github.com/fdrgsp/microcal[ndv]"
+```
+
+Or in a Jupyter notebook:
+
+```bash
+(uv) pip install "git+https://github.com/fdrgsp/microcal[ndv-jup]"
+```
+
+### ▶ Using uv (from source)
+
+Clone the repository and install with `uv`:
+
+```bash
+git clone https://github.com/fdrgsp/microcal
+cd microcal
+uv pip install -e .
+```
+
+With the optional ndv viewer:
+
+```bash
+uv pip install -e ".[ndv]"
+```
+
+Or in a Jupyter notebook:
+
+```bash
+uv pip install -e ".[ndv-jup]"
+```
+
+---
+
+## Chromatic shift correction
+
+See the full [API reference](API.md) for all parameters and return types.
+
+### Example usage
+
+```python
+import tifffile
+import logging
+from microcal import ChromaticShiftCorrector
+
+# optional: enable logging to see progress
+logging.basicConfig(level=logging.INFO)
+
+# 1. Load a multi-channel bead image (C, H, W)
+bead_img = tifffile.imread("beads.tiff")   # e.g. shape (2, 512, 512), uint16
+
+# 2. Create the corrector — tune parameters to your images
+cs = ChromaticShiftCorrector(
+    reference_channel=0,
+    smooth_sigma=3,
+    min_distance=2,
+    threshold_rel=0.5,
+    match_max_distance=20,
+    min_pairs=2,
+    subpixel_refine=True,
+    refine_radius=2,
+)
+
+# 3. Measure the chromatic shift from the bead image
+result = cs.measure(bead_img)
+print(result)
+
+# 4. Validate — re-detects beads in the corrected bead image and reports
+#    the residual displacement. Mean error < 0.3 px is excellent.
+val = cs.validate()
+
+# 5. Apply the correction to any sample image
+sample_img = tifffile.imread("sample.tiff")   # same number of channels
+corrected = cs.apply(sample_img, crop=True)
+tifffile.imwrite("sample_corrected.tiff", corrected)
+```
+
+For a complete runnable example see the [examples/](examples/) folder:
+
+```bash
+# Python script
+uv run examples/example_correction.py
+
+# Jupyter notebook
+uvx juv run examples/example_correction.ipynb
+```

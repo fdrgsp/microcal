@@ -1,9 +1,17 @@
-from microcal import ChromaticShiftCorrector
-from rich import print
-import ndv
-from microcal._sample_generator import generate_beads_image
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#   "microcal[ndv] @ git+https://github.com/fdrgsp/microcal",
+# ]
+# ///
 
-img, meta = generate_beads_image(
+
+from microcal import ChromaticShiftCorrector
+import ndv
+from microcal import generate_beads_image
+
+# generate a 2-channel synthetic beads image
+beads_img, _ = generate_beads_image(
     n_channels=2,
     shape=(512, 512),
     n_beads=50,
@@ -15,26 +23,60 @@ img, meta = generate_beads_image(
     rotations=[0, 5],
     scales=[(1, 1), (1.05, 0.95)],
     snr=8,
-    seed=42,
+    seed=42
 )
-ndv.imshow(img)
 
-sc = ChromaticShiftCorrector(
+# visualize the synthetic beads image with ndv
+ndv.imshow(
+    beads_img,
+    channel_mode="composite",
+    luts={0: {"cmap": "green"}, 1: {"cmap": "magenta"}},
+)
+
+# initialize the chromatic shift corrector with appropriate parameters
+csc = ChromaticShiftCorrector(
     reference_channel=0,
     smooth_sigma=3,
     min_distance=2,
     threshold_rel=0.5,
-    match_max_distance=20,
+    match_max_distance=50,
     min_pairs=2,
     subpixel_refine=True,
     refine_radius=2,
 )
 
-results = sc.measure(img)
-print(results)
+# measure the chromatic shift on the synthetic beads image
+results = csc.measure(beads_img)
 
-val = sc.validate()
-print(val)
+# visualize the detected beads in the first (reference) channel
+ch1_det = results.detection_image[:2, :, :]
+# in this image, 0 is the reference channel, and 1 is the beads mask
+ndv.imshow(
+    ch1_det,
+    channel_mode="composite",
+    luts={0: {"cmap": "green"}, 1: {"cmap": "gray"}},
+)
 
-image_corr = sc.apply(image_or_stack=img, result=results, crop=True)
-ndv.imshow(image_corr)
+# visualize the detected beads in the second channel
+ch2_det = results.detection_image[2:4, :, :]
+# in this image, 2 is the second channel, and 3 is the beads mask
+ndv.imshow(
+    ch2_det,
+    channel_mode="composite",
+    luts={2: {"cmap": "magenta"}, 3: {"cmap": "gray"}},
+)
+
+# visualize the matched bead pairs between the two channels
+ndv.imshow(results.pairs_image.astype("uint16"), default_lut={"cmap": "glasbey"})
+
+# run the validation
+val = csc.validate()
+
+# apply the measured chromatic shift correction to another image (in this case,
+# the same synthetic beads image)
+image_corr = csc.apply(image_or_stack=beads_img, result=results, crop=True)
+ndv.imshow(
+    image_corr,
+    channel_mode="composite",
+    luts={0: {"cmap": "green"}, 1: {"cmap": "magenta"}},
+)

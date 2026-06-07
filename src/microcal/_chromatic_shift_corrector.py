@@ -91,10 +91,7 @@ class ChromaticShiftCorrector:
     most published chromatic-aberration correction workflows:
 
     1. **Bead detection** via Gaussian smoothing + local-maxima search
-       (`peak_local_max`).  Because all beads are diffraction-limited and
-       therefore the same apparent size, a single-scale approach is sufficient
-       and simpler than the multi-scale LoG used for general blob detection.
-       An intensity-weighted centroid refinement step then gives sub-pixel
+       (`peak_local_max`). An intensity-weighted centroid refinement step then gives sub-pixel
        accuracy (~0.1 px) at negligible cost.
 
     2. **Coarse alignment** via centroid-difference between channels.  Robust
