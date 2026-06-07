@@ -50,7 +50,7 @@ uv pip install -e ".[ndv-jup]"
 
 ## Chromatic shift correction
 
-See the full [API reference](API.md) for all parameters and return types.
+For a detail explanation of the chromatic shift correction workflow and the underlying algorithms, see [chromatic_shift_correction.md](chromatic_shift_correction.md).
 
 ### Example usage
 
@@ -96,3 +96,7 @@ uv run examples/example_correction.py
 # Jupyter notebook
 uvx juv run examples/example_correction.ipynb
 ```
+
+## API reference
+
+See the full [API reference](API.md) for all parameters and return types.
