@@ -20,7 +20,7 @@ dependencies = [
 test = ["pytest"]
 
 [project.optional-dependencies]
-ndv = ["ndv[vispy]"]
+ndv = ["ndv[vispy,pyqt]"]
 ndv-jup = ["ndv[vispy,jupyter]", "jupyter-rfb<=0.5.4"]
 
 [tool.hatch.build.targets.wheel]

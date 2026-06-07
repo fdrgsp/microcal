@@ -189,12 +189,12 @@ def test_apply_wrong_ndim_raises():
 # ---------------------------------------------------------------------------
 
 def test_validate_mean_error_below_half_pixel(sc_2ch):
-    stats = sc_2ch.validate(verbose=False)
+    stats = sc_2ch.validate()
     assert stats[1]["mean_error"] < 0.5
 
 
 def test_validate_has_sufficient_pairs(sc_2ch):
-    stats = sc_2ch.validate(verbose=False)
+    stats = sc_2ch.validate()
     assert stats[1]["n_pairs"] >= 10
 
 
@@ -222,7 +222,7 @@ def test_three_channel_measure_and_validate(bead_3ch):
     assert 1 in sc._result.transforms
     assert 2 in sc._result.transforms
 
-    stats = sc.validate(verbose=False)
+    stats = sc.validate()
     assert stats[1]["mean_error"] < 1.0
     assert stats[2]["mean_error"] < 1.0
 

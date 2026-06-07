@@ -127,6 +127,8 @@ class ChromaticShiftCorrector:
         using an intensity-weighted centroid.
     refine_radius : int
         Half-width (px) of the patch used for centroid refinement.  Default 5.
+    verbose : bool
+        If True, show progress logs.  Default False.
     """
 
     def __init__(
@@ -139,6 +141,7 @@ class ChromaticShiftCorrector:
         min_pairs: int = 4,
         subpixel_refine: bool = True,
         refine_radius: int = 5,
+        verbose: bool = False,
     ) -> None:
         self.reference_channel = reference_channel
         self.smooth_sigma = smooth_sigma
@@ -148,6 +151,15 @@ class ChromaticShiftCorrector:
         self.min_pairs = min_pairs
         self.subpixel_refine = subpixel_refine
         self.refine_radius = refine_radius
+        self.verbose = verbose
+
+        if verbose and not logger.handlers:
+            _handler = logging.StreamHandler()
+            _handler.setFormatter(
+                logging.Formatter("%(name)s | %(levelname)s | %(message)s")
+            )
+            logger.addHandler(_handler)
+            logger.setLevel(logging.INFO)
 
         self._result: CorrectionResult | None = None
         self._bead_stack: NDArray | None = None
@@ -372,7 +384,6 @@ class ChromaticShiftCorrector:
         self,
         *,
         detection_threshold: float | None = None,
-        verbose: bool = True,
     ) -> dict[int, dict]:
         """
         Validate colocalization quality on the bead image used for calibration.
@@ -388,8 +399,6 @@ class ChromaticShiftCorrector:
         ----------
         detection_threshold : float or None
             Override `threshold_rel` for this validation pass only.
-        verbose : bool
-            Print a summary table to stdout.
 
         Returns
         -------
@@ -438,7 +447,7 @@ class ChromaticShiftCorrector:
                 "residuals": residuals,
             }
 
-        if verbose:
+        if self.verbose:
             self._print_validation(stats, ref_ch)
 
         return stats

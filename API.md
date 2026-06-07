@@ -12,14 +12,15 @@ from microcal import ChromaticShiftCorrector
 
 ```python
 ChromaticShiftCorrector(
-    reference_channel: int   = 0,
-    smooth_sigma: float      = 2.0,
-    min_distance: int        = 10,
-    threshold_rel: float     = 0.1,
+    reference_channel: int    = 0,
+    smooth_sigma: float       = 2.0,
+    min_distance: int         = 10,
+    threshold_rel: float      = 0.1,
     match_max_distance: float = 10.0,
-    min_pairs: int           = 4,
-    subpixel_refine: bool    = True,
-    refine_radius: int       = 5,
+    min_pairs: int            = 4,
+    subpixel_refine: bool     = True,
+    refine_radius: int        = 5,
+    verbose: bool             = False,
 )
 ```
 
@@ -33,38 +34,42 @@ ChromaticShiftCorrector(
 | `min_pairs` | `4` | Minimum number of matched pairs required before fitting a full transform. If fewer are found, a translation-only fallback is used. |
 | `subpixel_refine` | `True` | Refine pixel-level peak positions to sub-pixel accuracy using intensity-weighted centroid. Recommended; improves accuracy ~5–10×. |
 | `refine_radius` | `5` | Half-width (pixels) of the patch used for sub-pixel centroid refinement. Should be ≥ `smooth_sigma`. |
+| `verbose` | `False` | If `True`, show progress logs. |
 
 ---
 
 ### `measure`
 
 ```python
-sc.measure(
-    bead_stack: NDArray,        # shape (C, H, W), any integer or float dtype
+ChromaticShiftCorrector.measure(
+    bead_stack: NDArray,
     *,
     transform_type: str = "affine",
 ) -> CorrectionResult
 ```
 
-Estimates the chromatic shift transform for each channel relative to the reference channel. **Always call this on a bead image**, never on a sample image.
+Estimates the chromatic shift transform for each channel relative to the reference channel. **Always call this on a bead image**, never on a sample image. The result is stored internally and also returned — calling `apply()` or `validate()` afterwards does not require passing it explicitly.
+
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `bead_stack` | — | `NDArray` shape `(C, H, W)`, any integer or float dtype. |
+| `transform_type` | `"affine"` | Type of geometric transform to fit. See options below. |
 
 **`transform_type` options:**
 
-| Type | DOF | Captures | When to use |
+| Value | DOF | Captures | When to use |
 | --- | --- | --- | --- |
 | `"affine"` | 6 | translation + rotation + anisotropic scale + shear | Default; handles all common chromatic shift types |
 | `"similarity"` | 4 | translation + rotation + uniform scale | More stable with fewer beads; use when scale is isotropic |
 | `"euclidean"` | 3 | translation + rotation only | Use when scale difference is negligible |
 | `"translation"` | 2 | translation only | Use when only a lateral offset is expected |
 
-The result is stored internally and also returned. Calling `apply()` or `validate()` afterwards does not require passing it explicitly.
-
 ---
 
 ### `apply`
 
 ```python
-sc.apply(
+ChromaticShiftCorrector.apply(
     image_or_stack: NDArray | list[NDArray] | list[str],
     result: CorrectionResult | None = None,
     *,
@@ -74,39 +79,30 @@ sc.apply(
 
 Applies the measured correction to any image stack. Returns the corrected stack with the same dtype as the input.
 
-**`image_or_stack` accepted forms:**
-
-- `NDArray` shape `(C, H, W)` — channel-first stack.
-- `list[NDArray]` — one 2-D `(H, W)` array per channel, stacked in list order.
-- `list[str]` — one file path per channel; each file is read with `tifffile.imread`.
-
-**`result`:**
- a `CorrectionResult` from a previous `measure()` call. If `None`, the result from the last `measure()` call is used.
-
-**`crop`:**
-
-- `True` (default) — output is cropped to the largest rectangular region containing valid data in all channels. Removes zero-filled borders introduced by the transformation.
-- `False` — output has the same spatial size as the input; pixels outside the source frame are filled with 0.
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `image_or_stack` | — | Input to correct. Accepted forms: `NDArray (C, H, W)`; `list[NDArray]` — one 2-D array per channel; `list[str]` — one file path per channel (read with `tifffile`). |
+| `result` | `None` | `CorrectionResult` from a previous `measure()` call. If `None`, the result from the last `measure()` call is used automatically. |
+| `crop` | `True` | If `True`, crop the output to the largest rectangle containing valid data in all channels (removes zero-filled borders). If `False`, keep the original spatial size with zeros at the borders. |
 
 ---
 
 ### `validate`
 
 ```python
-sc.validate(
+ChromaticShiftCorrector.validate(
     *,
     detection_threshold: float | None = None,
-    verbose: bool = True,
 ) -> dict[int, dict]
 ```
 
-Re-detects beads in the corrected bead calibration image and measures the residual displacement between channels. Call this after `measure()` to confirm the correction worked before applying it to sample data. No arguments are needed — the corrector applies the correction to the stored bead stack internally.
+Re-detects beads in the corrected bead calibration image and measures the residual displacement between channels. Call this after `measure()` to confirm the correction worked before applying it to sample data. No arguments are required — the corrector applies the correction to the stored bead stack internally. If `verbose=True` was passed to the constructor, a summary table is logged automatically.
 
-**`detection_threshold`:** override `threshold_rel` for this validation pass only.
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `detection_threshold` | `None` | Override `threshold_rel` for this validation pass only. |
 
-**`verbose`:** print a summary table to stdout (default `True`).
-
-**Returns:** a dict keyed by channel index, each containing:
+**Returns:** `dict[int, dict]` keyed by channel index, each entry containing:
 
 | Key | Meaning |
 | --- | --- |
@@ -164,12 +160,12 @@ print(result)
 from microcal import ChannelTransform
 
 ct = result.transforms[1]
-ct.channel        # int — channel index
-ct.reference      # int — reference channel index
-ct.transform      # skimage.transform.AffineTransform — 3×3 matrix in (x, y) space
-ct.transform.params  # numpy array, the 3×3 homogeneous matrix
-ct.rms_residual   # float | None — RMS of inlier bead pairs after fitting, in pixels
-ct.n_pairs        # int — number of bead pairs used
+ct.channel           # int — channel index
+ct.reference         # int — reference channel index
+ct.transform         # skimage.transform.AffineTransform — 3×3 matrix in (x, y) space
+ct.transform.params  # NDArray — the 3×3 homogeneous matrix
+ct.rms_residual      # float | None — RMS of inlier bead pairs after fitting, in pixels
+ct.n_pairs           # int — number of bead pairs used
 ```
 
 The 3×3 matrix maps `[x_ch, y_ch, 1]ᵀ → [x_ref, y_ref, 1]ᵀ` where `(x, y) = (col, row)`.
@@ -206,7 +202,7 @@ Generates a synthetic multi-channel bead image for testing and development. Retu
 | `n_beads` | Number of beads to place |
 | `bead_sigma` | PSF radius (pixels) of each bead |
 | `bead_intensity` | Peak bead intensity before noise |
-| `bit_depth` | Output bit depth (8 or 16) |
+| `bit_depth` | Output bit depth (`8` or `16`) |
 | `offset` | Constant background offset added to all pixels |
 | `shifts` | Per-channel `(row, col)` translation applied to bead positions |
 | `rotations` | Per-channel rotation in degrees |
