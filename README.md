@@ -53,8 +53,6 @@ Or in a Jupyter notebook:
 uv pip install -e ".[ndv-jup]"
 ```
 
----
-
 ## Chromatic shift correction
 
 For a detail explanation of the chromatic shift correction workflow and the underlying algorithms, see the chromatic shift correction [documentation](chromatic_shift_correction.md).
