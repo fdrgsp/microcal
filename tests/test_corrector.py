@@ -23,8 +23,9 @@ from microcal._sample_generator import generate_beads_image
 
 # Use scope="module" so expensive measure() calls happen once per test session.
 
-@pytest.fixture(scope="module")
-def bead_2ch():
+
+@pytest.fixture(scope="module")  #  type: ignore
+def bead_2ch() -> tuple[np.ndarray, dict]:
     """2-channel, translation-only shift, high SNR — fast and deterministic."""
     img, meta = generate_beads_image(
         n_channels=2,
@@ -43,8 +44,8 @@ def bead_2ch():
     return img, meta
 
 
-@pytest.fixture(scope="module")
-def bead_3ch():
+@pytest.fixture(scope="module")  #  type: ignore
+def bead_3ch() -> tuple[np.ndarray, dict]:
     """3-channel with rotation and anisotropic scale."""
     img, meta = generate_beads_image(
         n_channels=3,
@@ -63,8 +64,8 @@ def bead_3ch():
     return img, meta
 
 
-@pytest.fixture(scope="module")
-def sc_2ch(bead_2ch):
+@pytest.fixture(scope="module")  #  type: ignore
+def sc_2ch(bead_2ch: tuple[np.ndarray, dict]) -> ChromaticShiftCorrector:
     """Corrector already calibrated on the 2-channel bead stack."""
     img, _ = bead_2ch
     sc = ChromaticShiftCorrector(
@@ -83,11 +84,16 @@ def sc_2ch(bead_2ch):
 # measure() tests
 # ---------------------------------------------------------------------------
 
-def test_measure_returns_correction_result(bead_2ch):
+
+def test_measure_returns_correction_result(bead_2ch: tuple[np.ndarray, dict]) -> None:
     img, _ = bead_2ch
     sc = ChromaticShiftCorrector(
-        smooth_sigma=2, min_distance=5, threshold_rel=0.3,
-        match_max_distance=15, min_pairs=3, refine_radius=3,
+        smooth_sigma=2,
+        min_distance=5,
+        threshold_rel=0.3,
+        match_max_distance=15,
+        min_pairs=3,
+        refine_radius=3,
     )
     result = sc.measure(img)
     assert isinstance(result, CorrectionResult)
@@ -96,17 +102,21 @@ def test_measure_returns_correction_result(bead_2ch):
     assert isinstance(result.transforms[1], ChannelTransform)
 
 
-def test_measure_rms_below_one_pixel(sc_2ch):
+def test_measure_rms_below_one_pixel(sc_2ch: ChromaticShiftCorrector) -> None:
+    assert sc_2ch._result is not None
     rms = sc_2ch._result.transforms[1].rms_residual
     assert rms is not None
     assert rms < 1.0
 
 
-def test_measure_sufficient_pairs(sc_2ch):
+def test_measure_sufficient_pairs(sc_2ch: ChromaticShiftCorrector) -> None:
+    assert sc_2ch._result is not None
     assert sc_2ch._result.transforms[1].n_pairs >= 10
 
 
-def test_measure_stores_bead_stack(sc_2ch, bead_2ch):
+def test_measure_stores_bead_stack(
+    sc_2ch: ChromaticShiftCorrector, bead_2ch: tuple[np.ndarray, dict]
+) -> None:
     img, _ = bead_2ch
     assert sc_2ch._bead_stack is not None
     assert sc_2ch._bead_stack.shape == img.shape
@@ -116,27 +126,36 @@ def test_measure_stores_bead_stack(sc_2ch, bead_2ch):
 # apply() — input form tests
 # ---------------------------------------------------------------------------
 
-def test_apply_ndarray_shape_preserved(sc_2ch, bead_2ch):
+
+def test_apply_ndarray_shape_preserved(
+    sc_2ch: ChromaticShiftCorrector, bead_2ch: tuple[np.ndarray, dict]
+) -> None:
     img, _ = bead_2ch
     out = sc_2ch.apply(img, crop=False)
     assert out.shape == img.shape
 
 
-def test_apply_dtype_preserved(sc_2ch, bead_2ch):
+def test_apply_dtype_preserved(
+    sc_2ch: ChromaticShiftCorrector, bead_2ch: tuple[np.ndarray, dict]
+) -> None:
     img, _ = bead_2ch
     out = sc_2ch.apply(img, crop=False)
     assert out.dtype == img.dtype
 
 
-def test_apply_crop_reduces_spatial_size(sc_2ch, bead_2ch):
+def test_apply_crop_reduces_spatial_size(
+    sc_2ch: ChromaticShiftCorrector, bead_2ch: tuple[np.ndarray, dict]
+) -> None:
     img, _ = bead_2ch
     out = sc_2ch.apply(img, crop=True)
-    assert out.shape[0] == img.shape[0]       # channels unchanged
+    assert out.shape[0] == img.shape[0]  # channels unchanged
     assert out.shape[1] <= img.shape[1]
     assert out.shape[2] <= img.shape[2]
 
 
-def test_apply_list_of_ndarrays(sc_2ch, bead_2ch):
+def test_apply_list_of_ndarrays(
+    sc_2ch: ChromaticShiftCorrector, bead_2ch: tuple[np.ndarray, dict]
+) -> None:
     img, _ = bead_2ch
     planes = [img[i] for i in range(img.shape[0])]
     out = sc_2ch.apply(planes, crop=False)
@@ -144,7 +163,9 @@ def test_apply_list_of_ndarrays(sc_2ch, bead_2ch):
     assert out.dtype == img.dtype
 
 
-def test_apply_list_of_paths(sc_2ch, bead_2ch):
+def test_apply_list_of_paths(
+    sc_2ch: ChromaticShiftCorrector, bead_2ch: tuple[np.ndarray, dict]
+) -> None:
     img, _ = bead_2ch
     with tempfile.TemporaryDirectory() as d:
         paths = []
@@ -157,7 +178,9 @@ def test_apply_list_of_paths(sc_2ch, bead_2ch):
     assert out.dtype == img.dtype
 
 
-def test_apply_list_of_paths_with_crop(sc_2ch, bead_2ch):
+def test_apply_list_of_paths_with_crop(
+    sc_2ch: ChromaticShiftCorrector, bead_2ch: tuple[np.ndarray, dict]
+) -> None:
     img, _ = bead_2ch
     with tempfile.TemporaryDirectory() as d:
         paths = []
@@ -170,14 +193,14 @@ def test_apply_list_of_paths_with_crop(sc_2ch, bead_2ch):
     assert out.shape[1] <= img.shape[1]
 
 
-def test_apply_bad_list_item_raises():
+def test_apply_bad_list_item_raises() -> None:
     sc = ChromaticShiftCorrector()
     sc._result = CorrectionResult(reference_channel=0)
     with pytest.raises(TypeError):
         sc.apply([42, 43])  # not str or ndarray
 
 
-def test_apply_wrong_ndim_raises():
+def test_apply_wrong_ndim_raises() -> None:
     sc = ChromaticShiftCorrector()
     sc._result = CorrectionResult(reference_channel=0)
     with pytest.raises(ValueError):
@@ -188,17 +211,18 @@ def test_apply_wrong_ndim_raises():
 # validate() tests
 # ---------------------------------------------------------------------------
 
-def test_validate_mean_error_below_half_pixel(sc_2ch):
+
+def test_validate_mean_error_below_half_pixel(sc_2ch: ChromaticShiftCorrector) -> None:
     stats = sc_2ch.validate()
     assert stats[1]["mean_error"] < 0.5
 
 
-def test_validate_has_sufficient_pairs(sc_2ch):
+def test_validate_has_sufficient_pairs(sc_2ch: ChromaticShiftCorrector) -> None:
     stats = sc_2ch.validate()
     assert stats[1]["n_pairs"] >= 10
 
 
-def test_validate_before_measure_raises():
+def test_validate_before_measure_raises() -> None:
     sc = ChromaticShiftCorrector()
     with pytest.raises(RuntimeError):
         sc.validate()
@@ -208,7 +232,8 @@ def test_validate_before_measure_raises():
 # Multi-channel (3-channel) tests
 # ---------------------------------------------------------------------------
 
-def test_three_channel_measure_and_validate(bead_3ch):
+
+def test_three_channel_measure_and_validate(bead_3ch: tuple[np.ndarray, dict]) -> None:
     img, _ = bead_3ch
     sc = ChromaticShiftCorrector(
         smooth_sigma=2,
@@ -219,6 +244,7 @@ def test_three_channel_measure_and_validate(bead_3ch):
         refine_radius=3,
     )
     sc.measure(img)
+    assert sc._result is not None
     assert 1 in sc._result.transforms
     assert 2 in sc._result.transforms
 
@@ -227,11 +253,15 @@ def test_three_channel_measure_and_validate(bead_3ch):
     assert stats[2]["mean_error"] < 1.0
 
 
-def test_three_channel_apply_shape(bead_3ch):
+def test_three_channel_apply_shape(bead_3ch: tuple[np.ndarray, dict]) -> None:
     img, _ = bead_3ch
     sc = ChromaticShiftCorrector(
-        smooth_sigma=2, min_distance=5, threshold_rel=0.3,
-        match_max_distance=20, min_pairs=3, refine_radius=3,
+        smooth_sigma=2,
+        min_distance=5,
+        threshold_rel=0.3,
+        match_max_distance=20,
+        min_pairs=3,
+        refine_radius=3,
     )
     sc.measure(img)
     out = sc.apply(img, crop=False)

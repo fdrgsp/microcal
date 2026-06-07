@@ -13,9 +13,9 @@ from __future__ import annotations
 import logging
 import warnings
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import numpy as np
-from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter
 from scipy.spatial import cKDTree
 from skimage.feature import peak_local_max
@@ -26,6 +26,9 @@ from skimage.transform import (
     SimilarityTransform,
     warp,
 )
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +43,7 @@ class ChannelTransform:
 
     channel: int
     reference: int
-    # skimage AffineTransform (3×3 homogeneous matrix)
+    # skimage AffineTransform (3x3 homogeneous matrix)
     transform: AffineTransform
     # residual RMS in pixels after fitting (None if not computed)
     rms_residual: float | None = None
@@ -91,8 +94,8 @@ class ChromaticShiftCorrector:
     most published chromatic-aberration correction workflows:
 
     1. **Bead detection** via Gaussian smoothing + local-maxima search
-       (`peak_local_max`). An intensity-weighted centroid refinement step then gives sub-pixel
-       accuracy (~0.1 px) at negligible cost.
+       (`peak_local_max`). An intensity-weighted centroid refinement step
+       then gives sub-pixel accuracy (~0.1 px) at negligible cost.
 
     2. **Coarse alignment** via centroid-difference between channels.  Robust
        to rotation and scale because the centroid of a symmetric bead
@@ -470,7 +473,10 @@ class ChromaticShiftCorrector:
     def _detect_beads(
         self, img: NDArray, threshold_rel: float | None = None
     ) -> NDArray:
-        """Return (N, 2) array of (row, col) bead centres, optionally sub-pixel refined."""
+        """Return an (N, 2) array of (row, col) bead centres.
+
+        Optionally sub-pixel refined.
+        """
         thr = threshold_rel if threshold_rel is not None else self.threshold_rel
         smoothed = gaussian_filter(img, sigma=self.smooth_sigma)
         peaks = peak_local_max(
@@ -529,7 +535,7 @@ class ChromaticShiftCorrector:
         _, rev_idx = rev_tree.query(shifted_mov, k=1)
 
         src_list, dst_list = [], []
-        for i, (dist, j) in enumerate(zip(fwd_dists, fwd_idx)):
+        for i, (dist, j) in enumerate(zip(fwd_dists, fwd_idx, strict=False)):
             if dist <= self.match_max_distance and rev_idx[j] == i:
                 src_list.append(ref_centers[i])
                 dst_list.append(mov_centers[j])
@@ -596,7 +602,8 @@ class ChromaticShiftCorrector:
             elif isinstance(item, np.ndarray):
                 if item.ndim != 2:
                     raise ValueError(
-                        f"Each array in the list must be 2-D (H, W), got shape {item.shape}"
+                        "Each array in the list must be 2-D (H, W), "
+                        f"got shape {item.shape}"
                     )
                 frames.append(item)
             else:
@@ -645,26 +652,22 @@ class ChromaticShiftCorrector:
         radius = max(2, round(self.smooth_sigma))
         ref_to_label: dict[tuple[int, int], int] = {}
         next_label = 1
-        for ch, (src, dst) in pairs_per_ch.items():
-            for s, d in zip(src, dst):
-                key = (int(round(s[0])), int(round(s[1])))
+        for _ch, (src, dst) in pairs_per_ch.items():
+            for s, d in zip(src, dst, strict=False):
+                key = (round(s[0]), round(s[1]))
                 if key not in ref_to_label:
                     ref_to_label[key] = next_label
                     next_label += 1
                 lbl = ref_to_label[key]
-                self._paint_disk(
-                    labels, int(round(s[0])), int(round(s[1])), radius, lbl
-                )
-                self._paint_disk(
-                    labels, int(round(d[0])), int(round(d[1])), radius, lbl
-                )
+                self._paint_disk(labels, round(s[0]), round(s[1]), radius, lbl)
+                self._paint_disk(labels, round(d[0]), round(d[1]), radius, lbl)
         return labels
 
     def _make_bead_mask(self, H: int, W: int, centers: NDArray) -> NDArray:
         mask = np.zeros((H, W), dtype=np.float32)
         radius = max(2, round(self.smooth_sigma))
         for cy, cx in centers:
-            self._paint_disk(mask, int(round(cy)), int(round(cx)), radius, 1.0)
+            self._paint_disk(mask, round(cy), round(cx), radius, 1.0)
         return mask
 
     @staticmethod

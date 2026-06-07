@@ -5,10 +5,11 @@
 # ]
 # ///
 
+"""Measure, validate, and apply chromatic shift correction, visualizing each step."""
 
-from microcal import ChromaticShiftCorrector
 import ndv
-from microcal import generate_beads_image
+
+from microcal import ChromaticShiftCorrector, generate_beads_image
 
 # generate a 2-channel synthetic beads image
 beads_img, _ = generate_beads_image(
@@ -23,7 +24,7 @@ beads_img, _ = generate_beads_image(
     rotations=[0, 5],
     scales=[(1, 1), (1.05, 0.95)],
     snr=8,
-    seed=42
+    seed=42,
 )
 
 # visualize the synthetic beads image with ndv
@@ -48,6 +49,9 @@ csc = ChromaticShiftCorrector(
 
 # measure the chromatic shift on the synthetic beads image
 results = csc.measure(beads_img)
+# detection_image and pairs_image are always populated by measure()
+assert results.detection_image is not None
+assert results.pairs_image is not None
 
 # visualize the detected beads in the first (reference) channel
 ch1_det = results.detection_image[:2, :, :]
@@ -64,7 +68,7 @@ ch2_det = results.detection_image[2:4, :, :]
 ndv.imshow(
     ch2_det,
     channel_mode="composite",
-    luts={2: {"cmap": "magenta"}, 3: {"cmap": "gray"}},
+    luts={0: {"cmap": "magenta"}, 1: {"cmap": "gray"}},
 )
 
 # visualize the matched bead pairs between the two channels

@@ -1,12 +1,14 @@
-"""
-Generate synthetic multi-channel fluorescence bead images with controllable chromatic shift.
-"""
+"""Generate synthetic multi-channel bead images with controllable chromatic shift."""
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
-from numpy.typing import NDArray
-from scipy.ndimage import gaussian_filter, affine_transform
+from scipy.ndimage import affine_transform, gaussian_filter
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
 
 
 def _make_bead_image(
@@ -18,14 +20,15 @@ def _make_bead_image(
     """Render a 2D image of point-like beads convolved with a Gaussian PSF.
 
     The impulse is pre-scaled so that each bead's peak intensity after
-    Gaussian blurring equals `intensity`.  For a 2-D Gaussian with std σ the
-    integral is 1 and the peak is 1/(2πσ²), so we multiply by 2πσ² upfront.
+    Gaussian blurring equals `intensity`.  For a 2-D Gaussian with std
+    `sigma`, the integral is 1 and the peak is 1/(2*pi*sigma**2), so we
+    multiply by 2*pi*sigma**2 upfront.
     """
     # pre-scale so post-blur peak ≈ intensity
     impulse_value = float(intensity) * 2.0 * np.pi * sigma**2
     img = np.zeros(shape, dtype=np.float32)
     for cy, cx in centers:
-        iy, ix = int(round(cy)), int(round(cx))
+        iy, ix = round(cy), round(cx)
         if 0 <= iy < shape[0] and 0 <= ix < shape[1]:
             img[iy, ix] = impulse_value
     return gaussian_filter(img, sigma=sigma)
@@ -105,7 +108,10 @@ def generate_beads_image(
     if not isinstance(offset, int):
         raise TypeError("offset must be an int")
     if not (0 <= offset <= int(max_val)):
-        raise ValueError(f"offset ({offset}) must be between 0 and {int(max_val)} for {bit_depth}-bit images")
+        raise ValueError(
+            f"offset ({offset}) must be between 0 and {int(max_val)} "
+            f"for {bit_depth}-bit images"
+        )
     peak = max_val * bead_intensity / 100.0
     offset_counts = float(offset)
     dtype = np.uint8 if bit_depth == 8 else np.uint16

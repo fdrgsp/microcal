@@ -1,0 +1,7 @@
+[default.extend-words]
+# "thr" is a common abbreviation for "threshold" in this codebase.
+thr = "thr"
+# "iy"/"ix" are (row, col) pixel-index variable names, not typos for "it".
+iy = "iy"
+# "ND" is part of the "NDArray" type name, not a typo for "AND".
+ND = "ND"
