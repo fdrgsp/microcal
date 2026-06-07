@@ -56,11 +56,7 @@ See the full [API reference](API.md) for all parameters and return types.
 
 ```python
 import tifffile
-import logging
 from microcal import ChromaticShiftCorrector
-
-# optional: enable logging to see progress
-logging.basicConfig(level=logging.INFO)
 
 # 1. Load a multi-channel bead image (C, H, W)
 bead_img = tifffile.imread("beads.tiff")   # e.g. shape (2, 512, 512), uint16
