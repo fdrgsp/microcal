@@ -80,7 +80,6 @@ csc = ChromaticShiftCorrector(
 
 # 3. Measure the chromatic shift from the bead image
 result = csc.measure(bead_img)
-print(result)
 
 # 4. Validate — re-detects beads in the corrected bead image and reports
 #    the residual displacement. Mean error < 0.3 px is excellent.
