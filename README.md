@@ -2,6 +2,13 @@
 
 # microcal — microscopy calibration tools
 
+## Table of contents
+
+- [Installation](#installation)
+- [Chromatic shift correction](#chromatic-shift-correction)
+  - [Example usage](#example-usage)
+- [API reference](#api-reference)
+
 ## Installation
 
 ### ▶ Using (uv) pip
@@ -50,7 +57,7 @@ uv pip install -e ".[ndv-jup]"
 
 ## Chromatic shift correction
 
-For a detail explanation of the chromatic shift correction workflow and the underlying algorithms, see [chromatic_shift_correction.md](chromatic_shift_correction.md).
+For a detail explanation of the chromatic shift correction workflow and the underlying algorithms, see the chromatic shift correction [documentation](chromatic_shift_correction.md).
 
 ### Example usage
 
