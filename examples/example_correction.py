@@ -43,6 +43,7 @@ csc = ChromaticShiftCorrector(
     min_pairs=2,
     subpixel_refine=True,
     refine_radius=2,
+    verbose=True,
 )
 
 # measure the chromatic shift on the synthetic beads image
