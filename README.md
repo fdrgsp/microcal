@@ -88,15 +88,15 @@ result = csc.measure(
 # the residual displacement. Mean error < 0.3 px is excellent.
 val = csc.validate()
 
-# 4. Save the calibration for later use (transforms only, no bead image)
-csc.save("calibration.json")
-
-# 5. Apply the correction to any sample image
+# 4. Apply the correction to any sample image
 sample_img = tifffile.imread("sample.tiff")   # same number of channels
 corrected = csc.apply(sample_img, crop=True)
 tifffile.imwrite("sample_corrected.tiff", corrected)
 
-# ── apply-only workflow ──────────────────────────────────────────────────────
+# ── Save & Load ──────────────────────────────────────────────────────
+# Save the calibration for later use (transforms only, no bead image)
+csc.save("calibration.json")
+
 # Load a saved calibration and apply it without re-running measure().
 csc2 = ChromaticShiftCorrector.from_json("calibration.json")
 corrected = csc2.apply(sample_img, crop=True)
