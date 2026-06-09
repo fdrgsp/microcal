@@ -66,8 +66,10 @@ from microcal import ChromaticShiftCorrector
 # 1. Load a multi-channel bead image (C, H, W)
 bead_img = tifffile.imread("beads.tiff")   # e.g. shape (2, 512, 512), uint16
 
-# 2. Create the corrector — tune parameters to your images
-csc = ChromaticShiftCorrector(
+# 2. Measure the chromatic shift — tune detection parameters here
+csc = ChromaticShiftCorrector()
+result = csc.measure(
+    bead_img,
     reference_channel=0,
     smooth_sigma=3,
     min_distance=2,
@@ -79,17 +81,22 @@ csc = ChromaticShiftCorrector(
     verbose=True,
 )
 
-# 3. Measure the chromatic shift from the bead image
-result = csc.measure(bead_img)
-
-# 4. Validate — re-detects beads in the corrected bead image and reports
+# 3. Validate — re-detects beads in the corrected bead image and reports
 # the residual displacement. Mean error < 0.3 px is excellent.
 val = csc.validate()
+
+# 4. Save the calibration for later use (transforms only, no bead image)
+csc.save("calibration.json")
 
 # 5. Apply the correction to any sample image
 sample_img = tifffile.imread("sample.tiff")   # same number of channels
 corrected = csc.apply(sample_img, crop=True)
 tifffile.imwrite("sample_corrected.tiff", corrected)
+
+# ── apply-only workflow ──────────────────────────────────────────────────────
+# Load a saved calibration and apply it without re-running measure().
+csc2 = ChromaticShiftCorrector.from_json("calibration.json")
+corrected = csc2.apply(sample_img, crop=True)
 ```
 
 For a complete runnable example see the [examples/](examples/) folder:

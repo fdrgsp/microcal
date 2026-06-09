@@ -13,6 +13,7 @@ import tempfile
 import numpy as np
 import pytest
 import tifffile
+from skimage.transform import AffineTransform
 
 from microcal import ChannelTransform, ChromaticShiftCorrector, CorrectionResult
 from microcal._sample_generator import generate_beads_image
@@ -68,7 +69,9 @@ def bead_3ch() -> tuple[np.ndarray, dict]:
 def sc_2ch(bead_2ch: tuple[np.ndarray, dict]) -> ChromaticShiftCorrector:
     """Corrector already calibrated on the 2-channel bead stack."""
     img, _ = bead_2ch
-    sc = ChromaticShiftCorrector(
+    sc = ChromaticShiftCorrector()
+    sc.measure(
+        img,
         smooth_sigma=2,
         min_distance=5,
         threshold_rel=0.3,
@@ -76,7 +79,6 @@ def sc_2ch(bead_2ch: tuple[np.ndarray, dict]) -> ChromaticShiftCorrector:
         min_pairs=3,
         refine_radius=3,
     )
-    sc.measure(img)
     return sc
 
 
@@ -87,7 +89,9 @@ def sc_2ch(bead_2ch: tuple[np.ndarray, dict]) -> ChromaticShiftCorrector:
 
 def test_measure_returns_correction_result(bead_2ch: tuple[np.ndarray, dict]) -> None:
     img, _ = bead_2ch
-    sc = ChromaticShiftCorrector(
+    sc = ChromaticShiftCorrector()
+    result = sc.measure(
+        img,
         smooth_sigma=2,
         min_distance=5,
         threshold_rel=0.3,
@@ -95,7 +99,6 @@ def test_measure_returns_correction_result(bead_2ch: tuple[np.ndarray, dict]) ->
         min_pairs=3,
         refine_radius=3,
     )
-    result = sc.measure(img)
     assert isinstance(result, CorrectionResult)
     assert result.reference_channel == 0
     assert 1 in result.transforms
@@ -229,13 +232,86 @@ def test_validate_before_measure_raises() -> None:
 
 
 # ---------------------------------------------------------------------------
+# save() / from_json() tests
+# ---------------------------------------------------------------------------
+
+
+def test_save_creates_file(sc_2ch: ChromaticShiftCorrector) -> None:
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "cal.json")
+        sc_2ch.save(path)
+        assert os.path.isfile(path)
+
+
+def test_from_json_apply_matches_original(
+    sc_2ch: ChromaticShiftCorrector, bead_2ch: tuple[np.ndarray, dict]
+) -> None:
+    img, _ = bead_2ch
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "cal.json")
+        sc_2ch.save(path)
+        sc2 = ChromaticShiftCorrector.from_json(path)
+
+    out_original = sc_2ch.apply(img, crop=False)
+    out_loaded = sc2.apply(img, crop=False)
+    np.testing.assert_array_equal(out_original, out_loaded)
+
+
+def test_from_json_reference_channel_preserved(sc_2ch: ChromaticShiftCorrector) -> None:
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "cal.json")
+        sc_2ch.save(path)
+        sc2 = ChromaticShiftCorrector.from_json(path)
+    assert sc2._result is not None
+    assert sc2._result.reference_channel == sc_2ch._result.reference_channel  # type: ignore[union-attr]
+
+
+def test_from_json_validate_raises() -> None:
+    """from_json does not restore the bead stack, so validate() must fail."""
+    sc = ChromaticShiftCorrector()
+    sc._result = CorrectionResult(
+        reference_channel=0,
+        transforms={
+            1: ChannelTransform(
+                channel=1,
+                transform=AffineTransform(),
+                rms_residual=0.1,
+                n_pairs=20,
+            )
+        },
+    )
+    with pytest.raises(RuntimeError):
+        sc.validate()
+
+
+def test_from_json_measure_params_restored(sc_2ch: ChromaticShiftCorrector) -> None:
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "cal.json")
+        sc_2ch.save(path)
+        sc2 = ChromaticShiftCorrector.from_json(path)
+    assert sc2.smooth_sigma == sc_2ch.smooth_sigma
+    assert sc2.min_distance == sc_2ch.min_distance
+    assert sc2.threshold_rel == sc_2ch.threshold_rel
+    assert sc2.match_max_distance == sc_2ch.match_max_distance
+    assert sc2.transform_type == sc_2ch.transform_type
+
+
+def test_save_before_measure_raises() -> None:
+    sc = ChromaticShiftCorrector()
+    with pytest.raises(RuntimeError):
+        sc.save("/tmp/should_not_exist.json")
+
+
+# ---------------------------------------------------------------------------
 # Multi-channel (3-channel) tests
 # ---------------------------------------------------------------------------
 
 
 def test_three_channel_measure_and_validate(bead_3ch: tuple[np.ndarray, dict]) -> None:
     img, _ = bead_3ch
-    sc = ChromaticShiftCorrector(
+    sc = ChromaticShiftCorrector()
+    sc.measure(
+        img,
         smooth_sigma=2,
         min_distance=5,
         threshold_rel=0.3,
@@ -243,7 +319,6 @@ def test_three_channel_measure_and_validate(bead_3ch: tuple[np.ndarray, dict]) -
         min_pairs=3,
         refine_radius=3,
     )
-    sc.measure(img)
     assert sc._result is not None
     assert 1 in sc._result.transforms
     assert 2 in sc._result.transforms
@@ -255,7 +330,9 @@ def test_three_channel_measure_and_validate(bead_3ch: tuple[np.ndarray, dict]) -
 
 def test_three_channel_apply_shape(bead_3ch: tuple[np.ndarray, dict]) -> None:
     img, _ = bead_3ch
-    sc = ChromaticShiftCorrector(
+    sc = ChromaticShiftCorrector()
+    sc.measure(
+        img,
         smooth_sigma=2,
         min_distance=5,
         threshold_rel=0.3,
@@ -263,6 +340,5 @@ def test_three_channel_apply_shape(bead_3ch: tuple[np.ndarray, dict]) -> None:
         min_pairs=3,
         refine_radius=3,
     )
-    sc.measure(img)
     out = sc.apply(img, crop=False)
     assert out.shape == img.shape
