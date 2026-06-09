@@ -614,7 +614,7 @@ class ChromaticShiftCorrector:
             c1 = min(W, int(cx) + radius + 1)
             patch = img[r0:r1, c0:c1]
             total = patch.sum()
-            if total == 0:
+            if total == 0:  # pragma: no cover
                 refined[i] = centers[i]
                 continue
             rows = np.arange(r0, r1, dtype=np.float64)
@@ -683,7 +683,7 @@ class ChromaticShiftCorrector:
             residual_threshold=2.0,
             max_trials=1000,
         )
-        if tform is None or inliers is None or np.sum(inliers) < 3:
+        if tform is None or inliers is None or np.sum(inliers) < 3:  # pragma: no cover
             tform = cls()
             tform.estimate(dst_xy, src_xy)
             inliers = np.ones(len(src), dtype=bool)

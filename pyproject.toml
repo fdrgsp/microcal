@@ -17,14 +17,13 @@ dependencies = [
 ]
 
 [dependency-groups]
-test = ["pytest"]
+test = ["pytest", "pytest-cov", "pytest-xdist>=3.8.0"]
 dev = [
     "mypy",
     "pre-commit",
     "pytest-cov",
     "pytest",
     "ruff",
-    "pytest-xdist>=3.8.0",
 ]
 
 [project.optional-dependencies]

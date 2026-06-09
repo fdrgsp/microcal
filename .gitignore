@@ -9,3 +9,4 @@ build/
 *.ipynb_checkpoints/
 uv.lock
 .claude
+.coverage
