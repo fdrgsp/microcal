@@ -8,6 +8,7 @@
 """Measure, validate, save, load, and apply chromatic shift correction."""
 
 import ndv
+import tifffile
 
 from microcal import ChromaticShiftCorrector, generate_beads_image
 
@@ -80,6 +81,9 @@ val = csc.validate()
 # apply the correction to a sample image
 # (here we reuse the bead image for demonstration)
 image_corr = csc.apply(image_or_stack=beads_img, crop=True)
+
+# save and visualize the corrected image
+tifffile.imwrite("corrected_image.tif", image_corr)
 ndv.imshow(
     image_corr,
     channel_mode="composite",
