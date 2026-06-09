@@ -9,3 +9,7 @@ build/
 *.ipynb_checkpoints/
 uv.lock
 .claude
+.coverage
+coverage.xml
+htmlcov/
+.DS_Store

@@ -11,30 +11,11 @@ from microcal import ChromaticShiftCorrector
 ### Constructor
 
 ```python
-ChromaticShiftCorrector(
-    reference_channel: int    = 0,
-    smooth_sigma: float       = 2.0,
-    min_distance: int         = 10,
-    threshold_rel: float      = 0.1,
-    match_max_distance: float = 10.0,
-    min_pairs: int            = 4,
-    subpixel_refine: bool     = True,
-    refine_radius: int        = 5,
-    verbose: bool             = False,
-)
+ChromaticShiftCorrector()
 ```
 
-| Parameter | Default | Meaning |
-| --- | --- | --- |
-| `reference_channel` | `0` | Channel index used as the geometric reference. All other channels are registered to it. |
-| `smooth_sigma` | `2.0` | Gaussian blur σ (pixels) applied before peak detection. Set to match the apparent bead PSF radius. Typical: 1–2 px for 100 nm beads at 100×, 2–3 px for 200 nm beads at 60×. |
-| `min_distance` | `10` | Minimum centre-to-centre distance (pixels) between two accepted bead peaks. Peaks closer than this are merged (only the brightest survives). |
-| `threshold_rel` | `0.1` | Minimum peak intensity as a fraction of the image maximum (after smoothing). Too high → dim beads missed. Too low → noise spikes counted as beads. |
-| `match_max_distance` | `10.0` | Maximum distance (pixels) for two bead centres to be paired. Must be larger than the residual displacement after the coarse shift, and smaller than the minimum inter-bead spacing. |
-| `min_pairs` | `4` | Minimum number of matched pairs required before fitting a full transform. If fewer are found, a translation-only fallback is used. |
-| `subpixel_refine` | `True` | Refine pixel-level peak positions to sub-pixel accuracy using intensity-weighted centroid. Recommended; improves accuracy ~5–10×. |
-| `refine_radius` | `5` | Half-width (pixels) of the patch used for sub-pixel centroid refinement. Should be ≥ `smooth_sigma`. |
-| `verbose` | `False` | If `True`, show progress logs. |
+No arguments. Detection and fitting parameters are passed to `measure()`.
+To load an existing calibration, use `ChromaticShiftCorrector.from_json()`.
 
 ---
 
@@ -44,7 +25,16 @@ ChromaticShiftCorrector(
 ChromaticShiftCorrector.measure(
     bead_stack: NDArray,
     *,
-    transform_type: str = "affine",
+    reference_channel: int    = 0,
+    transform_type: str       = "affine",
+    smooth_sigma: float       = 2.0,
+    min_distance: int         = 10,
+    threshold_rel: float      = 0.1,
+    match_max_distance: float = 10.0,
+    min_pairs: int            = 4,
+    subpixel_refine: bool     = True,
+    refine_radius: int        = 5,
+    verbose: bool             = False,
 ) -> CorrectionResult
 ```
 
@@ -53,7 +43,16 @@ Estimates the chromatic shift transform for each channel relative to the referen
 | Parameter | Default | Meaning |
 | --- | --- | --- |
 | `bead_stack` | — | `NDArray` shape `(C, H, W)`, any integer or float dtype. |
+| `reference_channel` | `0` | Channel index used as the geometric reference. All other channels are registered to it. |
 | `transform_type` | `"affine"` | Type of geometric transform to fit. See options below. |
+| `smooth_sigma` | `2.0` | Gaussian blur σ (pixels) applied before peak detection. Set to match the apparent bead PSF radius. Typical: 1–2 px for 100 nm beads at 100×, 2–3 px for 200 nm beads at 60×. |
+| `min_distance` | `10` | Minimum centre-to-centre distance (pixels) between two accepted bead peaks. Peaks closer than this are merged (only the brightest survives). |
+| `threshold_rel` | `0.1` | Minimum peak intensity as a fraction of the image maximum (after smoothing). Too high → dim beads missed. Too low → noise spikes counted as beads. |
+| `match_max_distance` | `10.0` | Maximum distance (pixels) for two bead centres to be paired. Must be larger than the residual displacement after the coarse shift, and smaller than the minimum inter-bead spacing. |
+| `min_pairs` | `4` | Minimum number of matched pairs required before fitting a full transform. If fewer are found, a translation-only fallback is used. |
+| `subpixel_refine` | `True` | Refine pixel-level peak positions to sub-pixel accuracy using intensity-weighted centroid. Recommended; improves accuracy ~5–10×. |
+| `refine_radius` | `5` | Half-width (pixels) of the patch used for sub-pixel centroid refinement. Should be ≥ `smooth_sigma`. |
+| `verbose` | `False` | If `True`, emit progress logs. |
 
 **`transform_type` options:**
 
@@ -82,7 +81,7 @@ Applies the measured correction to any image stack. Returns the corrected stack 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
 | `image_or_stack` | — | Input to correct. Accepted forms: `NDArray (C, H, W)`; `list[NDArray]` — one 2-D array per channel; `list[str]` — one file path per channel (read with `tifffile`). |
-| `result` | `None` | `CorrectionResult` from a previous `measure()` call. If `None`, the result from the last `measure()` call is used automatically. |
+| `result` | `None` | `CorrectionResult` from a previous `measure()` call. If `None`, the result from the last `measure()` call (or `from_json()`) is used automatically. |
 | `crop` | `True` | If `True`, crop the output to the largest rectangle containing valid data in all channels (removes zero-filled borders). If `False`, keep the original spatial size with zeros at the borders. |
 
 ---
@@ -96,7 +95,7 @@ ChromaticShiftCorrector.validate(
 ) -> dict[int, dict]
 ```
 
-Re-detects beads in the corrected bead calibration image and measures the residual displacement between channels. Call this after `measure()` to confirm the correction worked before applying it to sample data. No arguments are required — the corrector applies the correction to the stored bead stack internally. If `verbose=True` was passed to the constructor, a summary table is logged automatically.
+Re-detects beads in the corrected bead calibration image and measures the residual displacement between channels. Call this after `measure()` to confirm the correction worked before applying it to sample data. No arguments are required — the corrector applies the correction to the stored bead stack internally. If `verbose=True` was passed to `measure()`, a summary table is logged automatically.
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
@@ -120,6 +119,41 @@ Re-detects beads in the corrected bead calibration image and measures the residu
 | < 0.3 px | Excellent — diffraction-limited colocalization |
 | 0.3–1.0 px | Acceptable for most applications |
 | > 1.0 px | Something went wrong; revisit detection parameters |
+
+---
+
+### `save`
+
+```python
+ChromaticShiftCorrector.save(path: str | os.PathLike) -> None
+```
+
+Saves the calibration to a JSON file. The file contains the reference channel, all transform matrices (3×3 affine, RMS residuals, pair counts), and the full set of `measure()` parameters used to produce them. The bead image is not stored. The saved file is sufficient to reconstruct the corrector for `apply()` via `from_json()`.
+
+| Parameter | Meaning |
+| --- | --- |
+| `path` | Destination file path (e.g. `"calibration.json"`). |
+
+---
+
+### `from_json`
+
+```python
+ChromaticShiftCorrector.from_json(path: str | os.PathLike) -> ChromaticShiftCorrector
+```
+
+Class method. Loads a calibration saved by `save()` and returns a corrector ready to call `apply()`. All `measure()` parameters from the original calibration run are restored on the instance (e.g. `csc.smooth_sigma`, `csc.transform_type`). `validate()` is not available on a loaded instance (the bead image is not stored in the file); `measure()` can still be called to re-calibrate.
+
+| Parameter | Meaning |
+| --- | --- |
+| `path` | Path to a JSON file previously written by `save()`. |
+
+**Example:**
+
+```python
+csc = ChromaticShiftCorrector.from_json("calibration.json")
+corrected = csc.apply(sample_image)
+```
 
 ---
 
@@ -161,7 +195,6 @@ from microcal import ChannelTransform
 
 ct = result.transforms[1]
 ct.channel           # int — channel index
-ct.reference         # int — reference channel index
 ct.transform         # skimage.transform.AffineTransform — 3×3 matrix in (x, y) space
 ct.transform.params  # NDArray — the 3×3 homogeneous matrix
 ct.rms_residual      # float | None — RMS of inlier bead pairs after fitting, in pixels

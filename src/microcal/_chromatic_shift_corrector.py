@@ -6,10 +6,12 @@ Workflow
 1. Acquire a bead image with ChromaticShiftCorrector.measure()  → stores transforms
 2. Validate the result with ChromaticShiftCorrector.validate()
 3. Apply to any sample image with ChromaticShiftCorrector.apply()
+4. Save / load the calibration with ChromaticShiftCorrector.save() / from_json()
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import warnings
 from dataclasses import dataclass, field
@@ -28,6 +30,8 @@ from skimage.transform import (
 )
 
 if TYPE_CHECKING:
+    import os
+
     from numpy.typing import NDArray
 
 logger = logging.getLogger(__name__)
@@ -42,7 +46,6 @@ class ChannelTransform:
     """Affine transform that maps a channel into the reference frame."""
 
     channel: int
-    reference: int
     # skimage AffineTransform (3x3 homogeneous matrix)
     transform: AffineTransform
     # residual RMS in pixels after fitting (None if not computed)
@@ -57,10 +60,10 @@ class CorrectionResult:
 
     reference_channel: int
     transforms: dict[int, ChannelTransform] = field(default_factory=dict)
-    # Set by measure(show=True): (2*C, H, W) float32 — interleaved normalised
+    # Set by measure(): (2*C, H, W) float32 — interleaved normalised
     # images and filled-disk bead masks for every channel.
     detection_image: NDArray | None = None
-    # Set by measure(show=True): (H, W) int32 label image — each matched bead
+    # Set by measure(): (H, W) int32 label image — each matched bead
     # group shares the same non-zero integer; use a Glasbey LUT to visualise.
     pairs_image: NDArray | None = None
 
@@ -106,37 +109,32 @@ class ChromaticShiftCorrector:
        or translation) to the matched bead-centre pairs.
 
     Accuracy is typically < 0.3 px RMS for SNR > 10 with >= 20 matched pairs.
-
-    Parameters
-    ----------
-    reference_channel : int
-        Channel index used as the geometric reference.  All other channels are
-        registered to it.  Default 0.
-    smooth_sigma : float
-        Sigma (px) of the Gaussian pre-smoothing applied before peak finding.
-        Should match the apparent bead radius in your images.  Default 2.
-    min_distance : int
-        Minimum pixel distance between two accepted peaks.  Default 10 px.
-    threshold_rel : float
-        Minimum peak intensity as a fraction of the image maximum, after
-        Gaussian smoothing.  Default 0.1.
-    match_max_distance : float
-        Maximum distance (px) for a valid bead pair.  Default 10 px.
-    min_pairs : int
-        Minimum matched pairs required before fitting the transform.  Below
-        this threshold the corrector falls back to translation-only.  Default 4.
-    subpixel_refine : bool
-        If True (default), refine each pixel-level peak to sub-pixel accuracy
-        using an intensity-weighted centroid.
-    refine_radius : int
-        Half-width (px) of the patch used for centroid refinement.  Default 5.
-    verbose : bool
-        If True, show progress logs.  Default False.
     """
 
-    def __init__(
+    def __init__(self) -> None:
+        self._result: CorrectionResult | None = None
+        self._bead_stack: NDArray | None = None
+        # Detection params stored after measure() so validate() can reuse them.
+        self.transform_type: str = "affine"
+        self.smooth_sigma: float = 2.0
+        self.min_distance: int = 10
+        self.threshold_rel: float = 0.1
+        self.match_max_distance: float = 10.0
+        self.min_pairs: int = 4
+        self.subpixel_refine: bool = True
+        self.refine_radius: int = 5
+        self.verbose: bool = False
+
+    # ------------------------------------------------------------------
+    # Public method 1 — measure
+    # ------------------------------------------------------------------
+
+    def measure(
         self,
+        bead_stack: NDArray,
+        *,
         reference_channel: int = 0,
+        transform_type: str = "affine",
         smooth_sigma: float = 2.0,
         min_distance: int = 10,
         threshold_rel: float = 0.1,
@@ -145,8 +143,58 @@ class ChromaticShiftCorrector:
         subpixel_refine: bool = True,
         refine_radius: int = 5,
         verbose: bool = False,
-    ) -> None:
-        self.reference_channel = reference_channel
+    ) -> CorrectionResult:
+        """
+        Estimate the chromatic shift from a multi-channel bead image.
+
+        Parameters
+        ----------
+        bead_stack : NDArray, shape (C, H, W)
+            Multi-channel bead image (float or uint).
+        reference_channel : int
+            Channel index used as the geometric reference.  All other channels
+            are registered to it.  Default 0.
+        transform_type : str
+            Type of transform to fit: 'affine' (default), 'similarity',
+            'euclidean', or 'translation'.
+        smooth_sigma : float
+            Sigma (px) of the Gaussian pre-smoothing applied before peak
+            finding.  Should match the apparent bead radius.  Default 2.
+        min_distance : int
+            Minimum pixel distance between two accepted peaks.  Default 10 px.
+        threshold_rel : float
+            Minimum peak intensity as a fraction of the image maximum, after
+            Gaussian smoothing.  Default 0.1.
+        match_max_distance : float
+            Maximum distance (px) for a valid bead pair.  Default 10 px.
+        min_pairs : int
+            Minimum matched pairs required before fitting the transform.  Below
+            this threshold the corrector falls back to translation-only.
+            Default 4.
+        subpixel_refine : bool
+            If True (default), refine each pixel-level peak to sub-pixel
+            accuracy using an intensity-weighted centroid.
+        refine_radius : int
+            Half-width (px) of the patch used for centroid refinement.
+            Default 5.
+        verbose : bool
+            If True, emit progress logs.  Default False.
+
+        Returns
+        -------
+        CorrectionResult
+            Contains one ChannelTransform per non-reference channel, plus
+            visualisation arrays always populated:
+
+            * ``result.detection_image`` — ``(2*C, H, W)`` float32 with
+              normalised channel images and filled-disk bead masks interleaved:
+              ``[img_ch0, beads_ch0, img_ch1, beads_ch1, ...]``.
+            * ``result.pairs_image`` — ``(H, W)`` int32 label image where
+              every bead in a matched group shares the same non-zero integer.
+              Display with a Glasbey LUT (e.g. ``ndv.imshow(result.pairs_image)``).
+        """
+        # Store params so validate(), save(), and private helpers can read them.
+        self.transform_type = transform_type
         self.smooth_sigma = smooth_sigma
         self.min_distance = min_distance
         self.threshold_rel = threshold_rel
@@ -164,61 +212,25 @@ class ChromaticShiftCorrector:
             logger.addHandler(_handler)
             logger.setLevel(logging.INFO)
 
-        self._result: CorrectionResult | None = None
-        self._bead_stack: NDArray | None = None
-
-    # ------------------------------------------------------------------
-    # Public method 1 — measure
-    # ------------------------------------------------------------------
-
-    def measure(
-        self,
-        bead_stack: NDArray,
-        *,
-        transform_type: str = "affine",
-    ) -> CorrectionResult:
-        """
-        Estimate the chromatic shift from a multi-channel bead image.
-
-        Parameters
-        ----------
-        bead_stack : NDArray, shape (C, H, W)
-            Multi-channel bead image (float or uint).
-        transform_type : str
-            Type of transform to fit: 'affine' (default), 'similarity',
-            'euclidean', or 'translation'.
-
-        Returns
-        -------
-        CorrectionResult
-            Contains one ChannelTransform per non-reference channel, plus
-            visualisation arrays always populated:
-
-            * ``result.detection_image`` — ``(2*C, H, W)`` float32 with
-              normalised channel images and filled-disk bead masks interleaved:
-              ``[img_ch0, beads_ch0, img_ch1, beads_ch1, ...]``.
-            * ``result.pairs_image`` — ``(H, W)`` int32 label image where
-              every bead in a matched group shares the same non-zero integer.
-              Display with a Glasbey LUT (e.g. ``ndv.imshow(result.pairs_image)``).
-        """
         if bead_stack.ndim != 3:
             raise ValueError("bead_stack must be 3-D (C, H, W)")
 
         n_channels = bead_stack.shape[0]
-        ref_ch = self.reference_channel
-        result = CorrectionResult(reference_channel=ref_ch)
+        result = CorrectionResult(reference_channel=reference_channel)
 
         # Accumulate per-channel data for optional visualisation
         all_centers: dict[int, NDArray] = {}
         all_pairs: dict[int, tuple[NDArray, NDArray]] = {}
 
-        ref_img = self._normalise(bead_stack[ref_ch])
+        ref_img = self._normalise(bead_stack[reference_channel])
         ref_centers = self._detect_beads(ref_img)
-        all_centers[ref_ch] = ref_centers
-        logger.info("ch%d (reference): %d beads detected", ref_ch, len(ref_centers))
+        all_centers[reference_channel] = ref_centers
+        logger.info(
+            "ch%d (reference): %d beads detected", reference_channel, len(ref_centers)
+        )
 
         for ch in range(n_channels):
-            if ch == ref_ch:
+            if ch == reference_channel:
                 continue
 
             mov_img = self._normalise(bead_stack[ch])
@@ -269,7 +281,6 @@ class ChromaticShiftCorrector:
 
             result.transforms[ch] = ChannelTransform(
                 channel=ch,
-                reference=ref_ch,
                 transform=tform,
                 rms_residual=rms,
                 n_pairs=n_pairs,
@@ -315,7 +326,7 @@ class ChromaticShiftCorrector:
 
         result : CorrectionResult or None
             Use a previously computed result.  Defaults to the result stored
-            by the last call to `measure()`.
+            by the last call to `measure()` or loaded via `from_json()`.
         crop : bool
             If True (default), the output is cropped to the largest rectangle
             containing valid data in every channel.
@@ -456,6 +467,106 @@ class ChromaticShiftCorrector:
         return stats
 
     # ------------------------------------------------------------------
+    # Public method 4 — save / from_json
+    # ------------------------------------------------------------------
+
+    def save(self, path: str | os.PathLike) -> None:
+        """
+        Save the calibration transforms to a JSON file.
+
+        Only the transforms (3x3 affine matrices, RMS residuals, pair counts)
+        and the reference channel are serialised — the bead image is not.
+        The saved file is sufficient to reconstruct the corrector for
+        :meth:`apply` via :meth:`from_json`.
+
+        Parameters
+        ----------
+        path : str or path-like
+            Destination file path (e.g. ``"calibration.json"``).
+        """
+        result = self._resolve_result(None)
+        data: dict = {
+            "reference_channel": result.reference_channel,
+            "measure_params": {
+                "transform_type": self.transform_type,
+                "smooth_sigma": self.smooth_sigma,
+                "min_distance": self.min_distance,
+                "threshold_rel": self.threshold_rel,
+                "match_max_distance": self.match_max_distance,
+                "min_pairs": self.min_pairs,
+                "subpixel_refine": self.subpixel_refine,
+                "refine_radius": self.refine_radius,
+                "verbose": self.verbose,
+            },
+            "transforms": {
+                str(ch): {
+                    "channel": ct.channel,
+                    "matrix": ct.transform.params.tolist(),
+                    "rms_residual": ct.rms_residual,
+                    "n_pairs": ct.n_pairs,
+                }
+                for ch, ct in result.transforms.items()
+            },
+        }
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+
+    @classmethod
+    def from_json(cls, path: str | os.PathLike) -> ChromaticShiftCorrector:
+        """
+        Load a calibration saved by :meth:`save` and return a ready corrector.
+
+        The returned instance can immediately call :meth:`apply`.
+        :meth:`validate` is not available (the bead image is not stored in the
+        file); :meth:`measure` can still be called to re-calibrate.
+
+        Parameters
+        ----------
+        path : str or path-like
+            Path to a JSON file previously written by :meth:`save`.
+
+        Returns
+        -------
+        ChromaticShiftCorrector
+            Instance with the stored transforms loaded.
+
+        Examples
+        --------
+        >>> csc = ChromaticShiftCorrector.from_json("calibration.json")
+        >>> corrected = csc.apply(sample_image)
+        """
+        with open(path) as f:
+            data = json.load(f)
+
+        corrector = cls()
+        mp = data.get("measure_params", {})
+        corrector.transform_type = mp.get("transform_type", corrector.transform_type)
+        corrector.smooth_sigma = mp.get("smooth_sigma", corrector.smooth_sigma)
+        corrector.min_distance = mp.get("min_distance", corrector.min_distance)
+        corrector.threshold_rel = mp.get("threshold_rel", corrector.threshold_rel)
+        corrector.match_max_distance = mp.get(
+            "match_max_distance", corrector.match_max_distance
+        )
+        corrector.min_pairs = mp.get("min_pairs", corrector.min_pairs)
+        corrector.subpixel_refine = mp.get("subpixel_refine", corrector.subpixel_refine)
+        corrector.refine_radius = mp.get("refine_radius", corrector.refine_radius)
+        corrector.verbose = mp.get("verbose", corrector.verbose)
+        transforms: dict[int, ChannelTransform] = {}
+        for ch_str, td in data["transforms"].items():
+            ch = int(ch_str)
+            transforms[ch] = ChannelTransform(
+                channel=td["channel"],
+                transform=AffineTransform(matrix=np.array(td["matrix"])),
+                rms_residual=td["rms_residual"],
+                n_pairs=td["n_pairs"],
+            )
+        corrector._result = CorrectionResult(
+            reference_channel=data["reference_channel"],
+            transforms=transforms,
+        )
+        return corrector
+
+    # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
 
@@ -503,7 +614,7 @@ class ChromaticShiftCorrector:
             c1 = min(W, int(cx) + radius + 1)
             patch = img[r0:r1, c0:c1]
             total = patch.sum()
-            if total == 0:
+            if total == 0:  # pragma: no cover
                 refined[i] = centers[i]
                 continue
             rows = np.arange(r0, r1, dtype=np.float64)
@@ -572,7 +683,7 @@ class ChromaticShiftCorrector:
             residual_threshold=2.0,
             max_trials=1000,
         )
-        if tform is None or inliers is None or np.sum(inliers) < 3:
+        if tform is None or inliers is None or np.sum(inliers) < 3:  # pragma: no cover
             tform = cls()
             tform.estimate(dst_xy, src_xy)
             inliers = np.ones(len(src), dtype=bool)
