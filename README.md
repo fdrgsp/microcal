@@ -2,6 +2,9 @@
 
 # microcal — microscopy calibration tools
 
+[![CI](https://github.com/fdrgsp/microcal/actions/workflows/ci.yml/badge.svg)](https://github.com/fdrgsp/microcal/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/fdrgsp/microcal/branch/main/graph/badge.svg)](https://codecov.io/gh/fdrgsp/microcal)
+
 ## Table of contents
 
 - [Installation](#installation)

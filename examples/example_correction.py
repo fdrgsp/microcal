@@ -53,7 +53,7 @@ results = csc.measure(
 assert results.detection_image is not None
 assert results.pairs_image is not None
 
-# visualize the detected beads in the first (reference) channel
+# visualize the detected beads in the first (reference) channel (beads + masks)
 ch1_det = results.detection_image[:2, :, :]
 # in this image, 0 is the reference channel, and 1 is the beads mask
 ndv.imshow(
@@ -62,7 +62,7 @@ ndv.imshow(
     luts={0: {"cmap": "green"}, 1: {"cmap": "gray"}},
 )
 
-# visualize the detected beads in the second channel
+# visualize the detected beads in the second channel (beads + masks)
 ch2_det = results.detection_image[2:4, :, :]
 # in this image, 2 is the second channel, and 3 is the beads mask
 ndv.imshow(
@@ -77,9 +77,6 @@ ndv.imshow(results.pairs_image.astype("uint16"), default_lut={"cmap": "glasbey"}
 # validate: re-detects beads on the corrected bead image and reports residuals
 val = csc.validate()
 
-# save the calibration (transforms only — no bead image)
-csc.save("calibration.json")
-
 # apply the correction to a sample image
 # (here we reuse the bead image for demonstration)
 image_corr = csc.apply(image_or_stack=beads_img, crop=True)
@@ -89,8 +86,11 @@ ndv.imshow(
     luts={0: {"cmap": "green"}, 1: {"cmap": "magenta"}},
 )
 
-# ── apply-only workflow ──────────────────────────────────────────────────────
-# Load a previously saved calibration and apply it without re-running measure().
+# you can also save the calibration parameters and transform to a JSON file that can be
+# loaded for later use without needing to re-run the measurement step
+# csc.save("calibration.json")
+
+# load a previously saved calibration and apply it without re-running measure().
 # csc2 = ChromaticShiftCorrector.from_json("calibration.json")
 # image_corr2 = csc2.apply(image_or_stack=beads_img, crop=True)
 # ndv.imshow(
