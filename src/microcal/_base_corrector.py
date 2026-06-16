@@ -110,6 +110,11 @@ class _BaseChromaticShiftCorrector:
     def __init__(self) -> None:
         self._result: CorrectionResult | None = None
         self._bead_stack: NDArray | None = None
+        # Matched bead pairs from the last measure() call, keyed by channel index.
+        # Stored so validate() can apply the transform directly to known positions
+        # rather than re-detecting in the warped image (which creates cubic
+        # interpolation artifacts).
+        self._matched_pairs: dict[int, tuple[NDArray, NDArray]] = {}
         # Detection params stored after measure() so validate()/save() reuse them.
         self.transform_type: str = "affine"
         self.smooth_sigma: float | tuple[float, ...] = 2.0
@@ -189,7 +194,6 @@ class _BaseChromaticShiftCorrector:
             src, dst = self._match_beads(
                 ref_centers, mov_centers, coarse_shift, scale=scale
             )
-            all_pairs[ch] = (src, dst)
             self._logger.info(
                 "ch%d: %d bead pairs matched (max_distance=%.1f)",
                 ch,
@@ -206,12 +210,16 @@ class _BaseChromaticShiftCorrector:
                 tform = self._fit_translation(coarse_shift)
                 rms: float | None = None
                 n_pairs = 0
+                inlier_mask = np.zeros(len(src), dtype=bool)
             else:
-                tform, rms = self._fit_transform(src, dst, transform_type)
+                tform, rms, inlier_mask = self._fit_transform(src, dst, transform_type)
                 n_pairs = len(src)
                 self._logger.info(
                     "ch%d: fit RMS = %.3f  transform =\n%s", ch, rms, tform.params
                 )
+            # Store only RANSAC inlier pairs so validate() uses the same clean
+            # subset (outlier pairs inflate mean_error when the transform is applied).
+            all_pairs[ch] = (src[inlier_mask], dst[inlier_mask])
 
             result.transforms[ch] = ChannelTransform(
                 channel=ch,
@@ -222,6 +230,7 @@ class _BaseChromaticShiftCorrector:
 
         self._result = result
         self._bead_stack = bead_stack
+        self._matched_pairs = all_pairs
 
         result.detection_image = self._build_detection_image(bead_stack, all_centers)
         result.pairs_image = self._build_pairs_image(bead_stack, all_pairs)
@@ -260,28 +269,52 @@ class _BaseChromaticShiftCorrector:
         if self._result is None or self._bead_stack is None:
             raise RuntimeError("No calibration data available. Run measure() first.")
 
-        corrected_stack = self.apply(self._bead_stack, crop=False)
         ref_ch = self._result.reference_channel
-        scale = (
-            np.asarray(self.voxel_size, dtype=np.float64)
-            if self.voxel_size is not None
-            else None
-        )
 
-        ref_img = self._normalise(corrected_stack[ref_ch])
-        ref_centers = self._detect_beads(ref_img, threshold_rel=detection_threshold)
+        # Re-use the matched bead pairs stored during measure() so that validate()
+        # is independent of image warping artifacts (cubic interpolation ringing in
+        # the corrected image would otherwise create hundreds of spurious peaks).
+        # If detection_threshold is overridden we fall back to fresh detection.
+        if detection_threshold is not None:
+            scale = (
+                np.asarray(self.voxel_size, dtype=np.float64)
+                if self.voxel_size is not None
+                else None
+            )
+            ref_img = self._normalise(self._bead_stack[ref_ch])
+            ref_centers = self._detect_beads(ref_img, threshold_rel=detection_threshold)
+            pairs: dict[int, tuple[NDArray, NDArray]] = {}
+            for ch in range(self._bead_stack.shape[0]):
+                if ch == ref_ch or ch not in self._result.transforms:
+                    continue
+                mov_img = self._normalise(self._bead_stack[ch])
+                mov_centers = self._detect_beads(
+                    mov_img, threshold_rel=detection_threshold
+                )
+                coarse = (
+                    ref_centers.mean(axis=0) - mov_centers.mean(axis=0)
+                    if len(ref_centers) > 0 and len(mov_centers) > 0
+                    else np.zeros(self._spatial_ndim)
+                )
+                src_p, dst_p = self._match_beads(
+                    ref_centers, mov_centers, coarse, scale=scale
+                )
+                pairs[ch] = (src_p, dst_p)
+        else:
+            pairs = self._matched_pairs
 
         stats: dict[int, dict] = {}
-        for ch in range(corrected_stack.shape[0]):
-            if ch == ref_ch:
+        for ch, (src, dst) in pairs.items():
+            if ch == ref_ch or ch not in self._result.transforms:
                 continue
-
-            mov_img = self._normalise(corrected_stack[ch])
-            mov_centers = self._detect_beads(mov_img, threshold_rel=detection_threshold)
-            src, dst = self._match_beads(
-                ref_centers, mov_centers, np.zeros(self._spatial_ndim), scale=scale
-            )
-            stats[ch] = self._residual_stats(src, dst)
+            if len(src) == 0:
+                stats[ch] = self._residual_stats(src, dst)
+                continue
+            tform = self._result.transforms[ch].transform
+            dst_xy = dst[:, ::-1]           # array (z,y,x) → skimage (x,y,z)
+            dst_corrected_xy = tform(dst_xy)
+            dst_corrected = dst_corrected_xy[:, ::-1]   # back to (z,y,x)
+            stats[ch] = self._residual_stats(src, dst_corrected)
 
         if self.verbose:
             self._print_validation(stats, ref_ch)
@@ -596,7 +629,7 @@ class _BaseChromaticShiftCorrector:
         rms = float(
             np.sqrt(np.mean(np.sum((predicted - src_xy[inliers]) ** 2, axis=1)))
         )
-        return tform, rms
+        return tform, rms, inliers
 
     def _fit_translation(self, shift: NDArray) -> AffineTransform:
         """Build a pure-translation homogeneous transform of the right size.
