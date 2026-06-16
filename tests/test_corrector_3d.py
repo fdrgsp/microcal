@@ -7,12 +7,14 @@ calibration data so tests are self-contained and reproducible.
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 
 import numpy as np
 import pytest
 import tifffile
+from skimage.registration import phase_cross_correlation
 
 from microcal import (
     ChannelTransform,
@@ -21,6 +23,15 @@ from microcal import (
     CorrectionResult,
 )
 from microcal._sample_generator import generate_beads_image_3d
+
+
+def _channel_misalignment(stack: np.ndarray) -> float:
+    """Residual shift (voxels) between channel 1 and the reference channel 0."""
+    shift, _, _ = phase_cross_correlation(
+        stack[0].astype(float), stack[1].astype(float), upsample_factor=10
+    )
+    return float(np.linalg.norm(shift))
+
 
 # Reusable detection params that reliably converge on the synthetic volumes.
 _MEASURE_KW: dict = {
@@ -175,7 +186,7 @@ def test_measure_bad_voxel_size_raises(bead3d_2ch: tuple[np.ndarray, dict]) -> N
     img, _ = bead3d_2ch
     sc = ChromaticShiftCorrector3D()
     with pytest.raises(ValueError, match="voxel_size"):
-        sc.measure(img, voxel_size=(0.2, 0.1), **_MEASURE_KW)
+        sc.measure(img, voxel_size=(0.2, 0.1), **_MEASURE_KW)  # type: ignore[arg-type]
 
 
 def test_measure_translation_fallback(bead3d_2ch: tuple[np.ndarray, dict]) -> None:
@@ -272,6 +283,22 @@ def test_apply_3d_ndarray_raises(sc3d_2ch: ChromaticShiftCorrector3D) -> None:
 def test_apply_empty_list_raises(sc3d_2ch: ChromaticShiftCorrector3D) -> None:
     with pytest.raises(TypeError, match="non-empty"):
         sc3d_2ch.apply([])
+
+
+def test_apply_aligns_channels(
+    sc3d_2ch: ChromaticShiftCorrector3D, bead3d_2ch: tuple[np.ndarray, dict]
+) -> None:
+    """End-to-end: a misaligned volume becomes aligned after apply().
+
+    Confirms the correction moves the data from non-aligned to aligned (incl.
+    the axial component), not just that matched-centre residuals are small.
+    """
+    img, _ = bead3d_2ch
+    before = _channel_misalignment(img)
+    after = _channel_misalignment(sc3d_2ch.apply(img, crop=True))
+    assert before > 2.0  # channels start clearly misaligned (~5 voxel shift)
+    assert after < 1.0  # correction brings them sub-voxel
+    assert after < before / 3
 
 
 def test_apply_extra_channel_passthrough(
@@ -503,6 +530,39 @@ def test_match_beads_all_rejected_by_distance(
     assert dst.shape == (0, 3)
 
 
+def test_measure_per_axis_min_distance(bead3d_2ch: tuple[np.ndarray, dict]) -> None:
+    """A per-axis (tuple) min_distance uses an anisotropic peak footprint."""
+    img, _ = bead3d_2ch
+    sc = ChromaticShiftCorrector3D()
+    result = sc.measure(img, **{**_MEASURE_KW, "min_distance": (2, 4, 4)})
+    assert result.transforms[1].n_pairs >= 4
+    assert sc.validate()[1]["mean_error"] < 1.0
+
+
+def test_fit_transform_singular_falls_back_to_identity(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Coplanar (in z) beads yield a singular affine → identity fallback + warning."""
+    rng = np.random.default_rng(0)
+    yx = rng.uniform(0, 50, size=(30, 2))
+    src = np.hstack([np.zeros((30, 1)), yx])  # all z = 0 (coplanar)
+    dst = src + np.array([0.0, 1.0, 2.0])  # in-plane shift only
+    with caplog.at_level(logging.WARNING):
+        tform, _rms, _inliers = ChromaticShiftCorrector3D._fit_transform(
+            src, dst, "affine"
+        )
+    assert "singular" in caplog.text
+    np.testing.assert_array_equal(tform.params, np.eye(4))
+
+
+def test_crop_to_valid_empty_mask_returns_input() -> None:
+    """An all-False valid mask leaves the array uncropped."""
+    arr = np.ones((2, 4, 4, 4))
+    mask = np.zeros((4, 4, 4), dtype=bool)
+    out = ChromaticShiftCorrector3D._crop_to_valid(arr, mask)
+    assert out.shape == arr.shape
+
+
 # ---------------------------------------------------------------------------
 # generate_beads_image_3d — validation and defaults
 # ---------------------------------------------------------------------------
@@ -543,3 +603,9 @@ def test_generate_beads_3d_none_defaults() -> None:
     assert img.shape == (2, 12, 48, 48)
     assert img.dtype == np.uint16
     assert gt["centers"].shape == (5, 3)
+
+
+def test_generate_beads_3d_scalar_sigma() -> None:
+    """A scalar bead_sigma is broadcast to all three axes (_as_sigma_tuple)."""
+    _, gt = generate_beads_image_3d(**{**_BASE_GEN_KW, "bead_sigma": 1.0})
+    assert gt["bead_sigma"] == (1.0, 1.0, 1.0)

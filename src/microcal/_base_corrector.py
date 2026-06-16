@@ -278,9 +278,7 @@ class _BaseChromaticShiftCorrector:
                 continue
 
             mov_img = self._normalise(self._bead_stack[ch])
-            mov_centers = self._detect_beads(
-                mov_img, threshold_rel=detection_threshold
-            )
+            mov_centers = self._detect_beads(mov_img, threshold_rel=detection_threshold)
             if len(mov_centers) == 0:
                 stats[ch] = self._residual_stats(
                     np.empty((0, self._spatial_ndim)),
@@ -291,9 +289,9 @@ class _BaseChromaticShiftCorrector:
             # Apply the fitted transform to every detected moving position so
             # that they land in the reference frame.
             tform = self._result.transforms[ch].transform
-            mov_xy = mov_centers[:, ::-1]          # (z,y,x) → skimage (x,y,z)
+            mov_xy = mov_centers[:, ::-1]  # (z,y,x) → skimage (x,y,z)
             corrected_xy = tform(mov_xy)
-            corrected_centers = corrected_xy[:, ::-1]   # back to (z,y,x)
+            corrected_centers = corrected_xy[:, ::-1]  # back to (z,y,x)
 
             # Match corrected moving positions against reference positions using
             # a tight threshold (= RANSAC residual_threshold = 2 px) — after a
@@ -557,7 +555,7 @@ class _BaseChromaticShiftCorrector:
     @classmethod
     def _fit_transform(
         cls, src: NDArray, dst: NDArray, transform_type: str
-    ) -> tuple[AffineTransform, float]:
+    ) -> tuple[AffineTransform, float, NDArray]:
         """
         Fit a transform mapping dst (moving/ch) → src (reference) using RANSAC.
 
@@ -586,21 +584,23 @@ class _BaseChromaticShiftCorrector:
             tform is None
             or inliers is None
             or np.sum(inliers) < cls._ransac_min_samples
-        ):  # pragma: no cover
-            fallback = tform_cls()
-            tform = fallback if fallback.estimate(dst_xy, src_xy) else tform_cls()
+        ):
+            # RANSAC found no consensus model; fit all points directly instead.
+            tform = tform_cls.from_estimate(dst_xy, src_xy)
             inliers = np.ones(len(src), dtype=bool)
 
-        # Guard against a degenerate (singular) matrix — can occur when bead
-        # positions are nearly coplanar in z (e.g. thin z-stacks) or when
+        # Guard against a failed or degenerate (singular) fit — can occur when
+        # bead positions are nearly coplanar in z (e.g. thin z-stacks) or when
         # match_max_distance is too large and produces chaotic correspondences.
-        if abs(float(np.linalg.det(tform.params))) < 1e-6:
+        # A FailedEstimation is falsy; a singular matrix has det ≈ 0.
+        d = src_xy.shape[1]
+        if not tform or abs(float(np.linalg.det(tform.params))) < 1e-6:
             cls._logger.warning(
-                "Fitted transform is singular (det ≈ 0); bead positions may be "
-                "nearly coplanar or match_max_distance too large. "
-                "Falling back to identity (no correction). Check your parameters."
+                "Could not fit a valid transform (no RANSAC consensus or singular "
+                "fit); bead positions may be nearly coplanar or match_max_distance "
+                "too large. Falling back to identity (no correction). "
+                "Check your parameters."
             )
-            d = src_xy.shape[1]
             tform = AffineTransform(matrix=np.eye(d + 1))
             inliers = np.ones(len(src), dtype=bool)
 

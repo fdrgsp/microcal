@@ -93,5 +93,8 @@ ignore_missing_imports = true
 [tool.check-manifest]
 ignore = [".pre-commit-config.yaml", ".ruff_cache/**/*", "tests/**/*"]
 
-[tool.typos.default]
-extend-ignore-identifiers-re = ["ND=ND", "thr=thr", "iy=iy"]
+[tool.typos.default.extend-words]
+"nd" = "nd"
+"thr" = "thr"
+"iy" = "iy"
+"ded" = "ded"

@@ -211,18 +211,18 @@ The 3×3 matrix maps `[x_ch, y_ch, 1]ᵀ → [x_ref, y_ref, 1]ᵀ` where `(x, y)
 from microcal import generate_beads_image
 
 image, metadata = generate_beads_image(
-    n_channels: int,
-    shape: tuple[int, int],
-    n_beads: int,
-    bead_sigma: float,
-    bead_intensity: float,
-    bit_depth: int,
-    offset: int,
-    shifts: list[tuple[float, float]],
-    rotations: list[float],
-    scales: list[tuple[float, float]],
-    snr: float,
-    seed: int | None = None,
+    n_channels: int = 3,
+    shape: tuple[int, int] = (512, 512),                    # (H, W)
+    n_beads: int = 50,
+    bead_sigma: float = 2.0,
+    bead_intensity: float = 60.0,
+    bit_depth: int = 8,
+    shifts: list[tuple[float, float]] | None = None,        # (row, col)
+    rotations: list[float] | None = None,
+    scales: list[tuple[float, float]] | None = None,        # (scale_row, scale_col)
+    offset: int = 10,
+    snr: float = 20.0,
+    seed: int | None = 42,
 ) -> tuple[NDArray, dict]
 ```
 
@@ -236,10 +236,10 @@ Generates a synthetic multi-channel bead image for testing and development. Retu
 | `bead_sigma` | PSF radius (pixels) of each bead |
 | `bead_intensity` | Peak bead intensity before noise |
 | `bit_depth` | Output bit depth (`8` or `16`) |
-| `offset` | Constant background offset added to all pixels |
 | `shifts` | Per-channel `(row, col)` translation applied to bead positions |
 | `rotations` | Per-channel rotation in degrees |
 | `scales` | Per-channel `(scale_row, scale_col)` anisotropic scale |
+| `offset` | Constant background offset added to all pixels |
 | `snr` | Signal-to-noise ratio (controls Gaussian noise level) |
 | `seed` | Random seed for reproducibility |
 

@@ -321,7 +321,7 @@ class ChromaticShiftCorrector3D(_BaseChromaticShiftCorrector):
         gz, gy, gx = np.meshgrid(rng, rng, rng, indexing="ij")
         offs = np.stack([gz.ravel(), gy.ravel(), gx.ravel()], axis=1)
         keep = (offs**2).sum(axis=1) <= radius * radius
-        return offs[keep]  # type: ignore[no-any-return]
+        return offs[keep]
 
     def _paint_spheres(
         self, vol: NDArray, centers: NDArray, radius: int, value: float

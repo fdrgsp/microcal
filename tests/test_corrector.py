@@ -13,10 +13,21 @@ import tempfile
 import numpy as np
 import pytest
 import tifffile
+from skimage.registration import phase_cross_correlation
 from skimage.transform import AffineTransform
 
 from microcal import ChannelTransform, ChromaticShiftCorrector, CorrectionResult
+from microcal._base_corrector import _BaseChromaticShiftCorrector
 from microcal._sample_generator import generate_beads_image
+
+
+def _channel_misalignment(stack: np.ndarray) -> float:
+    """Residual shift (px) between channel 1 and the reference channel 0."""
+    shift, _, _ = phase_cross_correlation(
+        stack[0].astype(float), stack[1].astype(float), upsample_factor=10
+    )
+    return float(np.linalg.norm(shift))
+
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -437,6 +448,22 @@ def test_measure_blank_image_no_beads() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_apply_aligns_channels(
+    sc_2ch: ChromaticShiftCorrector, bead_2ch: tuple[np.ndarray, dict]
+) -> None:
+    """End-to-end: misaligned channels become aligned after apply().
+
+    Asserts the correction actually moves the data from non-aligned to aligned,
+    not just that the fitted transform has low residuals on matched centres.
+    """
+    img, _ = bead_2ch
+    before = _channel_misalignment(img)
+    after = _channel_misalignment(sc_2ch.apply(img, crop=True))
+    assert before > 2.0  # channels start clearly misaligned (~5 px shift)
+    assert after < 1.0  # correction brings them sub-pixel
+    assert after < before / 3
+
+
 def test_apply_with_explicit_result(
     sc_2ch: ChromaticShiftCorrector, bead_2ch: tuple[np.ndarray, dict]
 ) -> None:
@@ -582,3 +609,20 @@ def test_generate_beads_none_defaults() -> None:
     img, _ = generate_beads_image(**_BASE_GEN_KWARGS)
     assert img.shape == (2, 64, 64)
     assert img.dtype == np.uint16
+
+
+# ---------------------------------------------------------------------------
+# _BaseChromaticShiftCorrector — abstract hooks
+# ---------------------------------------------------------------------------
+
+
+def test_base_class_hooks_not_implemented() -> None:
+    """Dimension-specific hooks must be overridden by subclasses."""
+    base = _BaseChromaticShiftCorrector()
+    img = np.zeros((2, 4, 4))
+    with pytest.raises(NotImplementedError):
+        base.apply(img)
+    with pytest.raises(NotImplementedError):
+        base._build_detection_image(img, {})
+    with pytest.raises(NotImplementedError):
+        base._build_pairs_image(img, {})
