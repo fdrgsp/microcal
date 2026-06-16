@@ -13,7 +13,7 @@ from microcal import ChromaticShiftCorrector3D, generate_beads_image_3d
 
 # generate a 2-channel synthetic 3-D beads volume (C, Z, Y, X) with an
 # anisotropic PSF (axially elongated, as in a real z-stack)
-scale_z, scale_y, scale_x = (0.5, 0.1, 0.1)
+scale_z, scale_y, scale_x = (0.3, 0.1, 0.1)
 
 beads_vol, _ = generate_beads_image_3d(
     n_channels=2,
