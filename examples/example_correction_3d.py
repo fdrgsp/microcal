@@ -13,17 +13,26 @@ from microcal import ChromaticShiftCorrector3D, generate_beads_image_3d
 
 # generate a 2-channel synthetic 3-D beads volume (C, Z, Y, X) with an
 # anisotropic PSF (axially elongated, as in a real z-stack)
+scale_z, scale_y, scale_x = (0.3, 0.1, 0.1)
+
+# Express everything in voxels (physical / voxel_size)
+# PSF: ~500 nm axial, ~150 nm lateral
+# → sigma: 500/300 ≈ 1.7 vx axial, 150/100 = 1.5 vx lateral
+bead_sigma = (1.7, 1.5, 1.5)
+
+# Chromatic shift: ~0.9 µm axial, 0.15 µm lateral
+# → shift in voxels: 0.9/0.3=3.0, 0.15/0.1=1.5, -0.2/0.1=-2.0
 beads_vol, _ = generate_beads_image_3d(
     n_channels=2,
-    shape=(32, 256, 256),
+    shape=(64, 256, 256),  # enough z-slices so beads spread in z
     n_beads=60,
-    bead_sigma=(1.5, 2.0, 2.0),  # (sz, sy, sx)
+    bead_sigma=bead_sigma,
     bead_intensity=60.0,
     bit_depth=16,
     offset=100,
-    shifts=[(0, 0, 0), (2.0, 1.5, -2.5)],  # (dz, dy, dx)
-    rotations=[0, 3],  # degrees about the optical (z) axis
-    scales=[(1, 1, 1), (1.0, 1.02, 0.98)],
+    shifts=[(0, 0, 0), (3.0, 1.5, -2.0)],  # voxels = (0.9, 0.15, -0.2) µm
+    rotations=[0, 2],
+    scales=[(1, 1, 1), (1.0, 1.01, 0.99)],
     snr=10,
     seed=42,
 )
@@ -33,6 +42,7 @@ ndv.imshow(
     beads_vol,
     channel_mode="composite",
     luts={0: {"cmap": "green"}, 1: {"cmap": "magenta"}},
+    scales={0: 1.0, 1: scale_z, 2: scale_y, 3: scale_x},  # (C, Z, Y, X)
 )
 
 # measure the chromatic shift — all detection parameters go here.
@@ -42,14 +52,14 @@ csc = ChromaticShiftCorrector3D()
 results = csc.measure(
     beads_vol,
     reference_channel=0,
-    smooth_sigma=(1.5, 2.0, 2.0),
+    smooth_sigma=(1.0, 1.5, 1.5),
     min_distance=4,
     threshold_rel=0.3,
-    match_max_distance=15,
-    min_pairs=4,
+    match_max_distance=2,
+    min_pairs=2,
     subpixel_refine=True,
     refine_radius=(2, 3, 3),
-    voxel_size=(0.5, 0.1, 0.1),  # optional (z, y, x) in microns
+    voxel_size=(scale_z, scale_y, scale_x),  # optional (z, y, x) in microns
     verbose=True,
 )
 
@@ -63,10 +73,24 @@ ndv.imshow(
     ch1_det,
     channel_mode="composite",
     luts={0: {"cmap": "green"}, 1: {"cmap": "gray"}},
+    scales={0: 1.0, 1: scale_z, 2: scale_y, 3: scale_x},  # (C, Z, Y, X)
+)
+
+# visualize the detected beads in the shifted channel (volume + sphere masks)
+ch2_det = results.detection_image[2:4]
+ndv.imshow(
+    ch2_det,
+    channel_mode="composite",
+    luts={0: {"cmap": "magenta"}, 1: {"cmap": "gray"}},
+    scales={0: 1.0, 1: scale_z, 2: scale_y, 3: scale_x},  # (C, Z, Y, X)
 )
 
 # visualize the matched bead pairs between the two channels (3-D label volume)
-ndv.imshow(results.pairs_image.astype("uint16"), default_lut={"cmap": "glasbey"})
+ndv.imshow(
+    results.pairs_image.astype("uint16"),
+    default_lut={"cmap": "glasbey"},
+    scales={0: scale_z, 1: scale_y, 2: scale_x},  # (Z, Y, X)
+)
 
 # validate: re-detects beads on the corrected volume and reports residuals.
 # With voxel_size set, per-axis (voxel) and physical-unit errors are reported.
@@ -78,8 +102,8 @@ ndv.imshow(
     vol_corr,
     channel_mode="composite",
     luts={0: {"cmap": "green"}, 1: {"cmap": "magenta"}},
+    scales={0: 1.0, 1: scale_z, 2: scale_y, 3: scale_x},  # (C, Z, Y, X)
 )
-
 # you can also save the calibration parameters and transform to a JSON file that
 # can be loaded later without re-running the measurement step
 # csc.save("calibration_3d.json")
