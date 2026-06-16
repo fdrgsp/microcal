@@ -47,13 +47,13 @@ uv pip install -e .
 With the optional ndv viewer:
 
 ```bash
-uv pip install -e ".[ndv]"
+uv sync --extra ndv
 ```
 
 Or in a Jupyter notebook:
 
 ```bash
-uv pip install -e ".[ndv-jup]"
+uv sync --extra ndv-jup
 ```
 
 ## Chromatic shift correction
