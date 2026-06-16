@@ -17,24 +17,17 @@ scale_z, scale_y, scale_x = (0.5, 0.1, 0.1)
 
 beads_vol, _ = generate_beads_image_3d(
     n_channels=2,
-    shape=(64, 256, 256),
+    shape=(32, 256, 256),
     n_beads=60,
-    bead_sigma=(1.7, 1.5, 1.5),
+    bead_sigma=(1.5, 2.0, 2.0),  # (sz, sy, sx)
     bead_intensity=60.0,
     bit_depth=16,
     offset=100,
-    shifts=[(0, 0, 0), (3.0, 1.5, -2.0)],
+    shifts=[(0, 0, 0), (2.0, 1.5, -2.5)],  # (dz, dy, dx)
     rotations=[0, 3],
-    scales=[(1, 1, 1), (1.0, 1.01, 0.99)],
+    scales=[(1, 1, 1), (1.0, 1.02, 0.98)],
     snr=10,
     seed=42,
-)
-
-ndv.imshow(
-    beads_vol,
-    channel_mode="composite",
-    luts={0: {"cmap": "green"}, 1: {"cmap": "magenta"}},
-    scales={0: 1.0, 1: scale_z, 2: scale_y, 3: scale_x},  # (C, Z, Y, X)
 )
 
 # visualize the synthetic beads volume with ndv (z is a slider)
@@ -52,11 +45,11 @@ csc = ChromaticShiftCorrector3D()
 results = csc.measure(
     beads_vol,
     reference_channel=0,
-    smooth_sigma=(1.0, 1.5, 1.5),
+    smooth_sigma=(1.5, 2.0, 2.0),
     min_distance=4,
     threshold_rel=0.3,
-    match_max_distance=2,
-    min_pairs=2,
+    match_max_distance=15,
+    min_pairs=4,
     subpixel_refine=True,
     refine_radius=(2, 3, 3),
     voxel_size=(scale_z, scale_y, scale_x),  # optional (z, y, x) in microns
