@@ -112,6 +112,51 @@ uv run examples/example_correction.py
 uvx juv run examples/example_correction.ipynb
 ```
 
+### Volumetric (3-D) correction
+
+For z-stacks shaped `(C, Z, Y, X)` use `ChromaticShiftCorrector3D`. The API mirrors
+the 2-D corrector — `measure()` / `validate()` / `apply()` / `save()` / `from_json()` —
+but fits a 4×4 (3-D) affine and warps with `scipy.ndimage.affine_transform`.
+Because z-stacks are anisotropic (axial step ≫ lateral pixel), `smooth_sigma` and
+`refine_radius` accept a per-axis `(z, y, x)` tuple, and an optional `voxel_size`
+makes bead matching physically isotropic and reports residuals in physical units.
+
+```python
+import tifffile
+from microcal import ChromaticShiftCorrector3D
+
+# 1. Load a multi-channel bead volume (C, Z, Y, X)
+bead_vol = tifffile.imread("beads_zstack.tiff")   # e.g. (2, 32, 512, 512)
+
+# 2. Measure — per-axis sigma + optional voxel_size handle anisotropy
+csc = ChromaticShiftCorrector3D()
+csc.measure(
+    bead_vol,
+    smooth_sigma=(1.5, 2.0, 2.0),   # (sz, sy, sx)
+    min_distance=4,
+    threshold_rel=0.3,
+    match_max_distance=15,
+    refine_radius=(2, 3, 3),
+    voxel_size=(0.5, 0.1, 0.1),     # optional (z, y, x), e.g. microns
+)
+
+# 3. Validate, then apply to any sample volume
+csc.validate()
+sample_vol = tifffile.imread("sample_zstack.tiff")
+corrected = csc.apply(sample_vol, crop=True)
+
+# 4. Save / load (JSON records the 4x4 transforms, ndim and voxel_size)
+csc.save("calibration_3d.json")
+csc2 = ChromaticShiftCorrector3D.from_json("calibration_3d.json")
+```
+
+Runnable 3-D example:
+
+```bash
+uv run examples/example_correction_3d.py
+uvx juv run examples/example_correction_3d.ipynb
+```
+
 ## API reference
 
 See the full [API reference](API.md) for all parameters and return types.

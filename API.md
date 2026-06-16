@@ -242,3 +242,87 @@ Generates a synthetic multi-channel bead image for testing and development. Retu
 | `scales` | Per-channel `(scale_row, scale_col)` anisotropic scale |
 | `snr` | Signal-to-noise ratio (controls Gaussian noise level) |
 | `seed` | Random seed for reproducibility |
+
+---
+
+## `ChromaticShiftCorrector3D`
+
+```python
+from microcal import ChromaticShiftCorrector3D
+```
+
+The volumetric counterpart of `ChromaticShiftCorrector` for z-stacks shaped `(C, Z, Y, X)`. The pipeline, return types and method names are identical — `measure()`, `apply()`, `validate()`, `save()`, `from_json()` — so the tables above apply, with the following 3-D differences:
+
+- **Input** is `(C, Z, Y, X)` (and `apply` also accepts `list[NDArray]` of `(Z, Y, X)` volumes or `list[str]` paths to 3-D TIFFs).
+- **Transforms are 4×4** homogeneous matrices (12-DOF affine). `apply()` warps with `scipy.ndimage.affine_transform` (tricubic).
+- `detection_image` is `(2*C, Z, Y, X)` (volume + filled-sphere mask per channel); `pairs_image` is `(Z, Y, X)`.
+- `save()` writes the 4×4 matrices plus an `"ndim": 3` marker and the `voxel_size`. `from_json()` raises if a file's `ndim` does not match the class.
+
+### `measure` — additional / changed parameters
+
+```python
+ChromaticShiftCorrector3D.measure(
+    bead_stack: NDArray,                 # (C, Z, Y, X)
+    *,
+    reference_channel: int = 0,
+    transform_type: str = "affine",
+    smooth_sigma: float | tuple[float, float, float] = 2.0,   # scalar or (sz, sy, sx)
+    min_distance: int | tuple[int, int, int] = 10,            # scalar or (mz, my, mx)
+    threshold_rel: float = 0.1,
+    match_max_distance: float = 10.0,
+    min_pairs: int = 4,
+    subpixel_refine: bool = True,
+    refine_radius: int | tuple[int, int, int] = 5,            # scalar or (rz, ry, rx)
+    voxel_size: tuple[float, float, float] | None = None,     # (z, y, x)
+    verbose: bool = False,
+) -> CorrectionResult
+```
+
+| Parameter | Meaning (3-D specifics) |
+| --- | --- |
+| `smooth_sigma` | Scalar or per-axis `(sz, sy, sx)`. Use a per-axis value for anisotropic stacks where the PSF is axially elongated. |
+| `min_distance` | Scalar (isotropic in voxels) or per-axis `(mz, my, mx)`, which builds an anisotropic exclusion footprint (e.g. a smaller axial separation). |
+| `refine_radius` | Scalar or per-axis `(rz, ry, rx)` half-width of the centroid-refinement patch. |
+| `voxel_size` | Optional physical voxel size `(z, y, x)`. When given, bead matching uses a physically isotropic metric (so `match_max_distance` is interpreted in physical units) and `validate()` reports residuals in physical units. `None` ⇒ pure voxel units. |
+
+The fitted transform always lives in **voxel space**, so the correction is correct regardless of `voxel_size`; that argument only affects matching robustness and residual reporting.
+
+`validate()` returns the same keys as the 2-D version (in voxels) and additionally:
+
+| Key | Meaning |
+| --- | --- |
+| `mean_error_per_axis` | Mean absolute residual per axis `(z, y, x)`, in voxels |
+| `mean_error_physical` / `median_error_physical` / `max_error_physical` | Residual norm in physical units (only when `voxel_size` is set) |
+
+---
+
+## `generate_beads_image_3d`
+
+```python
+from microcal import generate_beads_image_3d
+
+volume, metadata = generate_beads_image_3d(
+    n_channels: int = 3,
+    shape: tuple[int, int, int] = (32, 256, 256),          # (Z, Y, X)
+    n_beads: int = 50,
+    bead_sigma: float | tuple[float, float, float] = (1.5, 2.0, 2.0),
+    bead_intensity: float = 60.0,
+    bit_depth: int = 8,
+    shifts: list[tuple[float, float, float]] | None = None,        # (dz, dy, dx)
+    rotations: list[float | tuple[float, float, float]] | None = None,
+    scales: list[tuple[float, float, float]] | None = None,        # (sz, sy, sx)
+    offset: int = 10,
+    snr: float = 20.0,
+    seed: int | None = 42,
+) -> tuple[NDArray, dict]
+```
+
+The 3-D counterpart of `generate_beads_image`. Renders beads with an anisotropic Gaussian PSF and warps each channel by a per-channel 3-D affine about the volume centre. Returns a `(C, Z, Y, X)` uint array and a metadata dict (`centers` is `(N, 3)` in `(z, y, x)`).
+
+| Parameter | Meaning (differences from 2-D) |
+| --- | --- |
+| `shape` | Volume size `(Z, Y, X)` in voxels |
+| `bead_sigma` | Scalar or per-axis `(sz, sy, sx)` PSF radius (real PSFs have `sz > sxy`) |
+| `shifts` | Per-channel `(dz, dy, dx)` translation in voxels |
+| `rotations` | Per-channel rotation in degrees: a scalar (about the optical/z axis) or a `(rz, ry, rx)` Euler triple |
+| `scales` | Per-channel `(sz, sy, sx)` anisotropic scale |

@@ -272,3 +272,133 @@ each other, so the residuals should be small:
 A high residual after validation usually means too few/too noisy bead detections
 going into Step 5 (check `smooth_sigma`, `threshold_rel`, `min_distance`) rather
 than a problem with the fitting itself.
+
+---
+
+## 3-D (volumetric) pipeline — what changes
+
+`ChromaticShiftCorrector3D` handles z-stacks shaped `(C, Z, Y, X)` and follows
+exactly the same seven steps as the 2D pipeline above. This section documents
+only the differences.
+
+### Input convention
+
+The array axis order is `(channel, z, y, x)`. Steps 1–5 work on `(Z, Y, X)`
+volumes instead of `(H, W)` planes; everything else (normalisation, centroid
+refinement, coarse-shift subtraction, MNN matching, RANSAC) is identical in logic
+— only extended to three spatial dimensions.
+
+### Step 2 — Anisotropic detection parameters
+
+Real microscopy z-stacks are **anisotropic**: the axial (z) pixel spacing is
+typically 3–10× larger than the lateral pixel spacing, and the PSF is elongated
+axially. Three parameters therefore accept either a scalar (applied uniformly) or
+a `(sz, sy, sx)` tuple:
+
+| Parameter | What it controls |
+| --- | --- |
+| `smooth_sigma` | Gaussian blur before peak detection — use a smaller `sz` if the PSF footprint in z is narrow. |
+| `refine_radius` | Half-width of the centroid-refinement patch per axis. |
+| `min_distance` | Minimum centre-to-centre separation per axis — implemented as `peak_local_max(footprint=np.ones((fz, fy, fx)))`. |
+
+**Example:** for a stack with 300 nm lateral and 1000 nm axial spacing and
+200 nm beads, reasonable values are `smooth_sigma=(1.5, 2.0, 2.0)` (smaller
+axial blur because the PSF footprint is only ~1.5 voxels in z) and
+`refine_radius=(2, 3, 3)`.
+
+### Step 3 & 4 — Physical-unit bead matching via `voxel_size`
+
+Without `voxel_size`, bead positions are matched in raw voxels, so a 5 nm
+lateral pixel and a 300 nm axial step are treated as having equal weight. When
+`voxel_size=(dz, dy, dx)` is provided (in any consistent unit, e.g. µm), the
+corrector **scales all coordinates** by the voxel size before the KD-tree queries
+in Step 4, so `match_max_distance` is interpreted in physical units:
+
+```python
+scale = np.array(voxel_size)          # (dz, dy, dx)
+ref_phys  = ref_centers  * scale      # physical coords for KD-tree only
+mov_phys  = mov_centers  * scale
+```
+
+The coarse shift (Step 3) is also computed in physical units and then
+back-converted to voxels before being applied to the bead positions.
+
+`voxel_size` **does not change the fitted transform** — the transform matrix
+always lives in voxel space. It only makes bead matching physically isotropic
+(preventing lateral beads from stealing axial matches due to scale differences)
+and causes `validate()` to also report residuals in physical units.
+
+### Step 5 — 4×4 affine transform, `min_samples=4`
+
+The fitted transform is a **4×4 homogeneous matrix** encoding a full 3D affine
+(12 DOF):
+
+```text
+⎡ a00  a01  a02  tx ⎤   ⎡ x_ref ⎤   ⎡ x_mov ⎤
+⎢ a10  a11  a12  ty ⎥ × ⎢ y_ref ⎥ ≈ ⎢ y_mov ⎥
+⎢ a20  a21  a22  tz ⎥   ⎢ z_ref ⎥   ⎢ z_mov ⎥
+⎣  0    0    0   1  ⎦   ⎣  1    ⎦   ⎣  1    ⎦
+```
+
+where `(x, y, z) = (col, row, slice)` following skimage's convention. Because a
+3D affine has more degrees of freedom, RANSAC uses `min_samples=4` (versus 3 for
+the 2D case) to fit a minimal candidate transform.
+
+The translation-only fallback (`< min_pairs` matches) builds the 4×4 matrix
+directly:
+
+```python
+M = np.eye(4)
+M[:3, 3] = (dx, dy, dz)    # coarse shift in (x, y, z) order
+```
+
+### Step 6 — Applying the 3D correction
+
+`warp()` from skimage is 2D-only, so the 3D corrector applies the inverse
+transform with `scipy.ndimage.affine_transform`. The key detail is the
+**coordinate-order conversion** between skimage (x, y, z) and NumPy array
+indexing (z, y, x):
+
+```python
+inv  = tform.inverse.params    # 4×4 matrix in (x, y, z) order
+L    = inv[:3, :3]             # linear part
+t    = inv[:3,  3]             # translation part
+
+# Axis-reversal permutation:  P · M · P = M[::-1, ::-1]
+matrix = L[::-1, ::-1]        # linear part in (z, y, x) order
+offset = t[::-1]               # translation in (z, y, x) order
+
+affine_transform(volume, matrix, offset=offset, order=3, mode="constant", cval=0)
+```
+
+**Why does `[::-1, ::-1]` work?** NumPy's axis reversal is equivalent to
+conjugating a matrix by the permutation matrix `P` that reverses the axis order:
+`P · L · P = L[::-1, ::-1]`. Applying this consistently to both `L` and `t`
+(as `t[::-1]`) gives the mathematically correct (z, y, x)-ordered affine.
+
+The valid-mask crop extends to all three spatial axes: a `ones(Z, Y, X)` volume
+is warped with `order=0` per channel, results are ANDed, and the bounding box of
+True voxels is used to slice the output. An all-False plane (which can appear
+along z for large axial shifts) is handled by clamping the crop range.
+
+### Step 7 — 3D validation residuals
+
+`validate()` returns the same keys as the 2D version, plus:
+
+| Key | Meaning |
+| --- | --- |
+| `mean_error_per_axis` | Mean absolute residual per axis `(z, y, x)`, in voxels |
+| `mean_error_physical` | Mean residual norm in physical units (only when `voxel_size` set) |
+| `median_error_physical` | Median residual norm in physical units |
+| `max_error_physical` | Maximum residual norm in physical units |
+
+A typical well-corrected 3D stack achieves `mean_error < 0.5 vx` laterally and
+`< 1.0 vx` axially (axial is harder because the PSF is elongated and detection
+is less precise along z).
+
+### Save / load — `"ndim"` key
+
+The JSON written by `save()` includes an `"ndim": 3` field (or `2` for the 2D
+class). `from_json()` checks this field and raises a `ValueError` if it does not
+match the class — preventing a 2D calibration from being silently loaded into a
+3D corrector (or vice versa).
