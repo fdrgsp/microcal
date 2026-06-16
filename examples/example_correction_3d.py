@@ -13,26 +13,19 @@ from microcal import ChromaticShiftCorrector3D, generate_beads_image_3d
 
 # generate a 2-channel synthetic 3-D beads volume (C, Z, Y, X) with an
 # anisotropic PSF (axially elongated, as in a real z-stack)
-scale_z, scale_y, scale_x = (0.3, 0.1, 0.1)
+scale_z, scale_y, scale_x = (0.5, 0.1, 0.1)
 
-# Express everything in voxels (physical / voxel_size)
-# PSF: ~500 nm axial, ~150 nm lateral
-# → sigma: 500/300 ≈ 1.7 vx axial, 150/100 = 1.5 vx lateral
-bead_sigma = (1.7, 1.5, 1.5)
-
-# Chromatic shift: ~0.9 µm axial, 0.15 µm lateral
-# → shift in voxels: 0.9/0.3=3.0, 0.15/0.1=1.5, -0.2/0.1=-2.0
 beads_vol, _ = generate_beads_image_3d(
     n_channels=2,
-    shape=(64, 256, 256),  # enough z-slices so beads spread in z
+    shape=(32, 256, 256),
     n_beads=60,
-    bead_sigma=bead_sigma,
+    bead_sigma=(1.5, 2.0, 2.0),  # (sz, sy, sx)
     bead_intensity=60.0,
     bit_depth=16,
     offset=100,
-    shifts=[(0, 0, 0), (3.0, 1.5, -2.0)],  # voxels = (0.9, 0.15, -0.2) µm
-    rotations=[0, 2],
-    scales=[(1, 1, 1), (1.0, 1.01, 0.99)],
+    shifts=[(0, 0, 0), (2.0, 1.5, -2.5)],  # (dz, dy, dx)
+    rotations=[0, 3],
+    scales=[(1, 1, 1), (1.0, 1.02, 0.98)],
     snr=10,
     seed=42,
 )
@@ -52,11 +45,11 @@ csc = ChromaticShiftCorrector3D()
 results = csc.measure(
     beads_vol,
     reference_channel=0,
-    smooth_sigma=(1.0, 1.5, 1.5),
+    smooth_sigma=(1.5, 2.0, 2.0),
     min_distance=4,
     threshold_rel=0.3,
-    match_max_distance=2,
-    min_pairs=2,
+    match_max_distance=15,
+    min_pairs=4,
     subpixel_refine=True,
     refine_radius=(2, 3, 3),
     voxel_size=(scale_z, scale_y, scale_x),  # optional (z, y, x) in microns

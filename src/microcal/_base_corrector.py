@@ -587,8 +587,8 @@ class _BaseChromaticShiftCorrector:
             or inliers is None
             or np.sum(inliers) < cls._ransac_min_samples
         ):  # pragma: no cover
-            estimated = tform_cls.from_estimate(dst_xy, src_xy)
-            tform = estimated if estimated else tform_cls()
+            fallback = tform_cls()
+            tform = fallback if fallback.estimate(dst_xy, src_xy) else tform_cls()
             inliers = np.ones(len(src), dtype=bool)
 
         # Guard against a degenerate (singular) matrix — can occur when bead
