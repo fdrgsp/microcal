@@ -14,24 +14,24 @@ if TYPE_CHECKING:
 def _make_bead_image(
     shape: tuple[int, int],
     centers: NDArray,
-    intensity: float = 1.0,
-    sigma: float = 2.0,
+    intensities: NDArray,
+    sigmas: NDArray,
 ) -> NDArray:
-    """Render a 2D image of point-like beads convolved with a Gaussian PSF.
+    """Render a 2-D image of Gaussian spots with per-bead intensity and PSF size.
 
-    The impulse is pre-scaled so that each bead's peak intensity after
-    Gaussian blurring equals `intensity`.  For a 2-D Gaussian with std
-    `sigma`, the integral is 1 and the peak is 1/(2*pi*sigma**2), so we
-    multiply by 2*pi*sigma**2 upfront.
+    Uses direct analytic Gaussian placement with a local bounding box per spot,
+    so each bead can have its own peak intensity and sigma.
     """
-    # pre-scale so post-blur peak ≈ intensity
-    impulse_value = float(intensity) * 2.0 * np.pi * sigma**2
     img = np.zeros(shape, dtype=np.float32)
-    for cy, cx in centers:
-        iy, ix = round(cy), round(cx)
-        if 0 <= iy < shape[0] and 0 <= ix < shape[1]:
-            img[iy, ix] = impulse_value
-    return gaussian_filter(img, sigma=sigma)
+    for (y0, x0), s, amp in zip(centers, sigmas, intensities, strict=True):
+        r = int(s * 4)
+        ys = slice(max(0, round(y0) - r), min(shape[0], round(y0) + r + 1))
+        xs = slice(max(0, round(x0) - r), min(shape[1], round(x0) + r + 1))
+        yg = np.arange(ys.start, ys.stop, dtype=np.float64) - y0
+        xg = np.arange(xs.start, xs.stop, dtype=np.float64) - x0
+        YY, XX = np.meshgrid(yg, xg, indexing="ij")
+        img[ys, xs] += amp * np.exp(-0.5 * ((YY / s) ** 2 + (XX / s) ** 2))
+    return img
 
 
 def generate_beads_image(
@@ -50,6 +50,16 @@ def generate_beads_image(
     offset: int = 10,
     snr: float = 20.0,
     seed: int | None = 42,
+    # Physical PSF parameters — when na + pixel_size are set, sigma is derived
+    # from optics and overrides bead_sigma
+    pixel_size: float | None = None,
+    na: float | None = None,
+    em_wvl_um: float = 0.520,
+    # Per-bead variability
+    sigma_scale_range: tuple[float, float] | None = None,
+    intensity_range: tuple[float, float] | None = None,
+    # Autofluorescence background
+    background: float = 0.0,
 ) -> tuple[NDArray, dict]:
     """
     Generate a synthetic multi-channel bead image with chromatic shift.
@@ -64,6 +74,7 @@ def generate_beads_image(
         Number of beads placed in the reference (channel-0) frame.
     bead_sigma : float
         Gaussian PSF sigma in pixels (controls bead size; FWHM ≈ 2.35 * sigma).
+        Ignored when ``na`` and ``pixel_size`` are both set.
     bead_intensity : float
         Peak bead intensity as a percentage of the full dynamic range
         (0-100).  E.g. 60 means 60 % of 2**bit_depth - 1.
@@ -77,10 +88,10 @@ def generate_beads_image(
         Rotation in degrees applied to each channel.  None means 0 for all.
     scales : list of (sy, sx), length n_channels
         Anisotropic scale applied to each channel.  None means (1,1) for all.
-    offset : float
-        Camera baseline offset in absolute pixel counts (int) added to every
-        pixel before noise, mimicking dark current / electronics bias.  Must
-        be an int in [0, 2**bit_depth - 1].  Default 10.
+    offset : int
+        Camera baseline offset in absolute pixel counts added to every pixel
+        before noise, mimicking dark current / electronics bias.  Must be an
+        int in [0, 2**bit_depth - 1].  Default 10.
     snr : float
         Signal-to-noise ratio at the bead peak, defined as
         peak / readout_noise_std.  Controls the Gaussian readout noise floor
@@ -90,19 +101,51 @@ def generate_beads_image(
         Use np.inf to suppress all noise (noiseless simulation).
     seed : int or None
         NumPy random seed for reproducibility.
+    pixel_size : float, optional
+        Physical pixel size in µm.  Required together with ``na`` to derive
+        the PSF sigma from optics instead of using ``bead_sigma``.
+    na : float, optional
+        Objective numerical aperture.  When set alongside ``pixel_size``, PSF
+        sigma is computed as ``sigma_xy = 0.21 * em_wvl_um / na``, then
+        converted to pixels.
+    em_wvl_um : float
+        Emission wavelength in µm.  Default 0.520 (GFP).
+    sigma_scale_range : (lo, hi), optional
+        Per-bead random size jitter: each bead's sigma is multiplied by a
+        factor drawn uniformly from ``[lo, hi]``.  Requires ``0 < lo <= hi``.
+        None means all beads have the same sigma.
+    intensity_range : (lo, hi), optional
+        Per-bead intensity as a fraction of peak, drawn uniformly from
+        ``[lo, hi]``.  E.g. ``(0.5, 1.0)`` gives beads between 50 % and 100 %
+        of peak intensity.  None means all beads are at peak intensity.
+    background : float
+        Smooth autofluorescence background level as a fraction of peak
+        intensity (e.g. 0.05 = 5 % of peak).  A spatially smooth random field
+        is added per channel before noise.  Default 0.0 (no background).
 
     Returns
     -------
     stack : NDArray, shape (n_channels, H, W), dtype uint8 or uint16
         Multi-channel bead image.
     ground_truth : dict
-        Dictionary with keys 'centers', 'shifts', 'rotations', 'scales' that
-        describe the applied transformations (useful for validation).
+        Keys 'centers', 'intensities_per_bead' (N,), 'sigmas_per_bead' (N,),
+        'shifts', 'rotations', 'scales', 'bead_sigma', 'bit_depth',
+        'peak_value'.
     """
     if not (0.0 < bead_intensity <= 100.0):
         raise ValueError("bead_intensity must be in (0, 100]")
     if bit_depth not in (8, 16):
         raise ValueError("bit_depth must be 8 or 16")
+    if sigma_scale_range is not None:
+        lo, hi = sigma_scale_range
+        if lo <= 0 or lo > hi:
+            raise ValueError("sigma_scale_range must satisfy 0 < lo <= hi")
+    if intensity_range is not None:
+        lo, hi = intensity_range
+        if lo < 0 or lo > hi:
+            raise ValueError("intensity_range must satisfy 0 <= lo <= hi")
+    if background < 0.0:
+        raise ValueError("background must be >= 0")
 
     max_val = float(2**bit_depth - 1)
     if not isinstance(offset, int):
@@ -119,7 +162,13 @@ def generate_beads_image(
     rng = np.random.default_rng(seed)
     H, W = shape
 
-    # --- defaults (None = identity, no transform) ------------------------
+    # --- PSF sigma: derive from optics or use raw pixel value --------------
+    if na is not None and pixel_size is not None:
+        sigma = 0.21 * em_wvl_um / na / pixel_size
+    else:
+        sigma = float(bead_sigma)
+
+    # --- defaults (None = identity, no transform) --------------------------
     if shifts is None:
         shifts = [(0.0, 0.0)] * n_channels
     if rotations is None:
@@ -131,8 +180,9 @@ def generate_beads_image(
     assert len(rotations) == n_channels
     assert len(scales) == n_channels
 
-    # --- bead centres in channel-0 frame ---------------------------------
-    margin = int(bead_sigma * 4)
+    # --- bead centres in channel-0 frame ----------------------------------
+    margin_sigma = sigma * max(sigma_scale_range) if sigma_scale_range is not None else sigma
+    margin = int(margin_sigma * 4)
     centers = np.column_stack(
         [
             rng.uniform(margin, H - margin, size=n_beads),
@@ -140,11 +190,22 @@ def generate_beads_image(
         ]
     )
 
+    # --- per-bead sigmas and intensities -----------------------------------
+    if sigma_scale_range is not None:
+        sigmas_per_bead = sigma * rng.uniform(*sigma_scale_range, size=n_beads)
+    else:
+        sigmas_per_bead = np.full(n_beads, sigma)
+
+    if intensity_range is not None:
+        intensities_per_bead = peak * rng.uniform(*intensity_range, size=n_beads)
+    else:
+        intensities_per_bead = np.full(n_beads, peak)
+
     readout_std = peak / snr if np.isfinite(snr) else 0.0
     stack = np.zeros((n_channels, H, W), dtype=np.float64)
 
     for ch in range(n_channels):
-        ref_img = _make_bead_image(shape, centers, intensity=peak, sigma=bead_sigma)
+        ref_img = _make_bead_image(shape, centers, intensities_per_bead, sigmas_per_bead)
 
         dy, dx = shifts[ch]
         rot = rotations[ch]
@@ -176,25 +237,30 @@ def generate_beads_image(
                 cval=0.0,
             )
 
+        if background > 0.0:
+            bg = gaussian_filter(
+                rng.uniform(0, 1, shape).astype(np.float32), sigma=20
+            )
+            ch_img = ch_img + bg.astype(np.float64) / bg.max() * (background * peak)
+
         ch_img = ch_img + offset_counts
         if np.isfinite(snr):
-            # shot noise: Poisson sampling scales with sqrt(signal)
             ch_img = rng.poisson(ch_img).astype(np.float64)
-            # readout noise: Gaussian floor, std = peak / snr
             if readout_std > 0.0:
                 ch_img += rng.standard_normal(shape) * readout_std
 
         stack[ch] = ch_img
 
-    # clip lower bound to offset_counts: a camera with a fixed bias never
-    # reads below that baseline
     stack = np.clip(stack, offset_counts, max_val).astype(dtype)
 
     ground_truth = {
         "centers": centers,
+        "intensities_per_bead": intensities_per_bead,
+        "sigmas_per_bead": sigmas_per_bead,
         "shifts": shifts,
         "rotations": rotations,
         "scales": scales,
+        "bead_sigma": sigma,
         "bit_depth": bit_depth,
         "peak_value": peak,
     }
@@ -240,22 +306,28 @@ def _rotation_matrix_3d(rot: float | tuple[float, float, float]) -> NDArray:
 def _make_bead_image_3d(
     shape: tuple[int, int, int],
     centers: NDArray,
-    intensity: float = 1.0,
-    sigma: tuple[float, ...] = (1.5, 2.0, 2.0),
+    intensities: NDArray,
+    sigmas: NDArray,
 ) -> NDArray:
-    """Render a 3D volume of point-like beads convolved with a Gaussian PSF.
+    """Render a 3-D volume of Gaussian spots with per-bead intensity and PSF size.
 
-    The impulse is pre-scaled so each bead's peak after Gaussian blurring equals
-    `intensity`.  For a separable 3-D Gaussian the peak is
-    ``1 / ((2*pi)**1.5 * sz*sy*sx)``, so we multiply by its reciprocal upfront.
+    Uses direct analytic Gaussian placement with a local bounding box per spot,
+    so each bead can have its own peak intensity and sigma.
     """
-    impulse_value = float(intensity) * (2.0 * np.pi) ** 1.5 * float(np.prod(sigma))
-    vol = np.zeros(shape, dtype=np.float32)
-    for cz, cy, cx in centers:
-        iz, iy, ix = round(cz), round(cy), round(cx)
-        if 0 <= iz < shape[0] and 0 <= iy < shape[1] and 0 <= ix < shape[2]:
-            vol[iz, iy, ix] = impulse_value
-    return gaussian_filter(vol, sigma=sigma)
+    volume = np.zeros(shape, dtype=np.float32)
+    for (z0, y0, x0), (sz, sy, sx), amp in zip(centers, sigmas, intensities, strict=True):
+        r_z, r_y, r_x = int(sz * 4), int(sy * 4), int(sx * 4)
+        zs = slice(max(0, round(z0) - r_z), min(shape[0], round(z0) + r_z + 1))
+        ys = slice(max(0, round(y0) - r_y), min(shape[1], round(y0) + r_y + 1))
+        xs = slice(max(0, round(x0) - r_x), min(shape[2], round(x0) + r_x + 1))
+        zg = np.arange(zs.start, zs.stop, dtype=np.float64) - z0
+        yg = np.arange(ys.start, ys.stop, dtype=np.float64) - y0
+        xg = np.arange(xs.start, xs.stop, dtype=np.float64) - x0
+        ZZ, YY, XX = np.meshgrid(zg, yg, xg, indexing="ij")
+        volume[zs, ys, xs] += amp * np.exp(
+            -0.5 * ((ZZ / sz) ** 2 + (YY / sy) ** 2 + (XX / sx) ** 2)
+        )
+    return volume
 
 
 def generate_beads_image_3d(
@@ -274,6 +346,17 @@ def generate_beads_image_3d(
     offset: int = 10,
     snr: float = 20.0,
     seed: int | None = 42,
+    # Physical PSF parameters — when na + voxel_size are set, sigma is derived
+    # from optics and overrides bead_sigma
+    voxel_size: tuple[float, float, float] | None = None,
+    na: float | None = None,
+    ri: float = 1.0,
+    em_wvl_um: float = 0.520,
+    # Per-bead variability
+    sigma_scale_range: tuple[float, float] | None = None,
+    intensity_range: tuple[float, float] | None = None,
+    # Autofluorescence background
+    background: float = 0.0,
 ) -> tuple[NDArray, dict]:
     """
     Generate a synthetic multi-channel bead volume with chromatic shift.
@@ -292,7 +375,8 @@ def generate_beads_image_3d(
         Number of beads placed in the reference (channel-0) frame.
     bead_sigma : float or (sz, sy, sx)
         Gaussian PSF sigma in voxels.  A tuple makes the PSF axially elongated
-        (real PSFs have sz > sxy).
+        (real PSFs have sz > sxy).  Ignored when ``na`` and ``voxel_size`` are
+        both set.
     bead_intensity : float
         Peak bead intensity as a percentage of the full dynamic range (0-100).
     bit_depth : int
@@ -313,19 +397,54 @@ def generate_beads_image_3d(
         Poisson shot noise is always added on top.  Use np.inf for no noise.
     seed : int or None
         NumPy random seed for reproducibility.
+    voxel_size : (dz, dy, dx) in µm, optional
+        Physical voxel size.  Required together with ``na`` to derive the PSF
+        sigma from optics instead of using ``bead_sigma``.
+    na : float, optional
+        Objective numerical aperture.  When set alongside ``voxel_size``, PSF
+        sigmas are computed as:
+        ``sigma_xy = 0.21 * em_wvl_um / na`` and
+        ``sigma_z = 0.45 * em_wvl_um * ri / na**2``, then converted to voxels.
+    ri : float
+        Refractive index of the immersion medium.  Default 1.0 (air).
+    em_wvl_um : float
+        Emission wavelength in µm.  Default 0.520 (GFP).
+    sigma_scale_range : (lo, hi), optional
+        Per-bead random size jitter: each bead's sigma is multiplied by a
+        factor drawn uniformly from ``[lo, hi]``.  Requires ``0 < lo <= hi``.
+        None means all beads have the same sigma.
+    intensity_range : (lo, hi), optional
+        Per-bead intensity as a fraction of peak, drawn uniformly from
+        ``[lo, hi]``.  E.g. ``(0.5, 1.0)`` gives beads between 50 % and 100 %
+        of peak intensity.  None means all beads are at peak intensity.
+    background : float
+        Smooth autofluorescence background level as a fraction of peak intensity
+        (e.g. 0.05 = 5 % of peak).  A spatially smooth random field is added
+        per channel before noise.  Default 0.0 (no background).
 
     Returns
     -------
     stack : NDArray, shape (n_channels, Z, Y, X), dtype uint8 or uint16
         Multi-channel bead volume.
     ground_truth : dict
-        Keys 'centers' ((N, 3) in z, y, x), 'shifts', 'rotations', 'scales',
+        Keys 'centers' ((N, 3) in z, y, x), 'intensities_per_bead' (N,),
+        'sigmas_per_bead' ((N, 3)), 'shifts', 'rotations', 'scales',
         'bead_sigma', 'bit_depth', 'peak_value'.
     """
     if not (0.0 < bead_intensity <= 100.0):
         raise ValueError("bead_intensity must be in (0, 100]")
     if bit_depth not in (8, 16):
         raise ValueError("bit_depth must be 8 or 16")
+    if sigma_scale_range is not None:
+        lo, hi = sigma_scale_range
+        if lo <= 0 or lo > hi:
+            raise ValueError("sigma_scale_range must satisfy 0 < lo <= hi")
+    if intensity_range is not None:
+        lo, hi = intensity_range
+        if lo < 0 or lo > hi:
+            raise ValueError("intensity_range must satisfy 0 <= lo <= hi")
+    if background < 0.0:
+        raise ValueError("background must be >= 0")
 
     max_val = float(2**bit_depth - 1)
     if not isinstance(offset, int):
@@ -341,9 +460,17 @@ def generate_beads_image_3d(
 
     rng = np.random.default_rng(seed)
     Z, Y, X = shape
-    sigma = _as_sigma_tuple(bead_sigma, 3)
 
-    # --- defaults (None = identity, no transform) ------------------------
+    # --- PSF sigma: derive from optics or use raw voxel value --------------
+    if na is not None and voxel_size is not None:
+        dz, _, dx = voxel_size
+        sigma_xy_um = 0.21 * em_wvl_um / na
+        sigma_z_um = 0.45 * em_wvl_um * ri / na**2
+        sigma: tuple[float, ...] = (sigma_z_um / dz, sigma_xy_um / dx, sigma_xy_um / dx)
+    else:
+        sigma = _as_sigma_tuple(bead_sigma, 3)
+
+    # --- defaults (None = identity, no transform) --------------------------
     if shifts is None:
         shifts = [(0.0, 0.0, 0.0)] * n_channels
     if rotations is None:
@@ -355,8 +482,13 @@ def generate_beads_image_3d(
     assert len(rotations) == n_channels
     assert len(scales) == n_channels
 
-    # --- bead centres in channel-0 frame (z, y, x) -----------------------
-    margins = [int(4 * s) for s in sigma]
+    # --- bead centres in channel-0 frame (z, y, x) ------------------------
+    # margins use the maximum possible sigma (after jitter) to keep beads in-frame
+    if sigma_scale_range is not None:
+        margin_sigma = tuple(s * max(sigma_scale_range) for s in sigma)
+    else:
+        margin_sigma = sigma
+    margins = [int(4 * s) for s in margin_sigma]
     centers = np.column_stack(
         [
             rng.uniform(margins[0], Z - margins[0], size=n_beads),
@@ -365,11 +497,24 @@ def generate_beads_image_3d(
         ]
     )
 
+    # --- per-bead sigmas and intensities -----------------------------------
+    sigma_arr = np.array(sigma, dtype=np.float64)
+    if sigma_scale_range is not None:
+        jitter = rng.uniform(*sigma_scale_range, size=n_beads)
+        sigmas_per_bead = np.outer(jitter, sigma_arr)
+    else:
+        sigmas_per_bead = np.tile(sigma_arr, (n_beads, 1))
+
+    if intensity_range is not None:
+        intensities_per_bead = peak * rng.uniform(*intensity_range, size=n_beads)
+    else:
+        intensities_per_bead = np.full(n_beads, peak)
+
     readout_std = peak / snr if np.isfinite(snr) else 0.0
     stack = np.zeros((n_channels, Z, Y, X), dtype=np.float64)
 
     for ch in range(n_channels):
-        ref_vol = _make_bead_image_3d(shape, centers, intensity=peak, sigma=sigma)
+        ref_vol = _make_bead_image_3d(shape, centers, intensities_per_bead, sigmas_per_bead)
 
         dz, dy, dx = shifts[ch]
         rot = rotations[ch]
@@ -407,6 +552,12 @@ def generate_beads_image_3d(
                 cval=0.0,
             )
 
+        if background > 0.0:
+            bg = gaussian_filter(
+                rng.uniform(0, 1, shape).astype(np.float32), sigma=20
+            )
+            ch_vol = ch_vol + bg.astype(np.float64) / bg.max() * (background * peak)
+
         ch_vol = ch_vol + offset_counts
         if np.isfinite(snr):
             ch_vol = rng.poisson(ch_vol).astype(np.float64)
@@ -419,6 +570,8 @@ def generate_beads_image_3d(
 
     ground_truth = {
         "centers": centers,
+        "intensities_per_bead": intensities_per_bead,
+        "sigmas_per_bead": sigmas_per_bead,
         "shifts": shifts,
         "rotations": rotations,
         "scales": scales,

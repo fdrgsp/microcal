@@ -13,11 +13,13 @@ import tifffile
 from microcal import ChromaticShiftCorrector, generate_beads_image
 
 # generate a 2-channel synthetic beads image
+# PSF sigma is derived from microscope parameters instead of specifying it in pixels:
+#   sigma_xy = 0.21 * em_wvl_um / na / pixel_size  →  ~1.5 px here
+pixel_size = 0.1  # µm/pixel
 beads_img, _ = generate_beads_image(
     n_channels=2,
     shape=(512, 512),
     n_beads=50,
-    bead_sigma=2,
     bead_intensity=60.0,
     bit_depth=16,
     offset=100,
@@ -26,6 +28,15 @@ beads_img, _ = generate_beads_image(
     scales=[(1, 1), (1.05, 0.95)],
     snr=8,
     seed=42,
+    # physical PSF (overrides bead_sigma)
+    pixel_size=pixel_size,
+    na=0.75,
+    em_wvl_um=0.52,
+    # per-bead variability
+    sigma_scale_range=(0.8, 1.5),
+    intensity_range=(0.5, 1.0),
+    # smooth autofluorescence background (5 % of peak)
+    background=0.05,
 )
 
 # visualize the synthetic beads image with ndv

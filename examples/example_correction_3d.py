@@ -19,7 +19,6 @@ beads_vol, _ = generate_beads_image_3d(
     n_channels=2,
     shape=(64, 256, 256),
     n_beads=60,
-    bead_sigma=(1.5, 2.0, 2.0),  # (sz, sy, sx)
     bead_intensity=60.0,
     bit_depth=16,
     offset=100,
@@ -28,6 +27,18 @@ beads_vol, _ = generate_beads_image_3d(
     scales=[(1, 1, 1), (1.0, 1.02, 0.98)],
     snr=10,
     seed=42,
+    # physical PSF derived from microscope parameters (overrides bead_sigma):
+    #   sigma_z  = 0.45 * em_wvl_um * ri / na**2 / scale_z  →  ~1.4 voxels
+    #   sigma_xy = 0.21 * em_wvl_um / na / scale_xy          →  ~1.5 voxels
+    voxel_size=(scale_z, scale_y, scale_x),
+    na=0.75,
+    ri=1.0,
+    em_wvl_um=0.52,
+    # per-bead variability
+    sigma_scale_range=(0.8, 1.5),
+    intensity_range=(0.5, 1.0),
+    # smooth autofluorescence background (5 % of peak)
+    background=0.05,
 )
 
 # visualize the synthetic beads volume with ndv (z is a slider)
