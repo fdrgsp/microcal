@@ -41,7 +41,7 @@ Clone the repository and install with `uv`:
 ```bash
 git clone https://github.com/fdrgsp/microcal
 cd microcal
-uv pip install -e .
+uv sync
 ```
 
 With the optional ndv viewer:
