@@ -156,11 +156,6 @@ class _BaseChromaticShiftCorrector:
 
         all_centers: dict[int, NDArray] = {}
         all_pairs: dict[int, tuple[NDArray, NDArray]] = {}
-        scale = (
-            np.asarray(self.voxel_size, dtype=np.float64)
-            if self.voxel_size is not None
-            else None
-        )
 
         ref_img = self._normalise(bead_stack[reference_channel])
         ref_centers = self._detect_beads(ref_img)
@@ -191,9 +186,7 @@ class _BaseChromaticShiftCorrector:
                 np.round(coarse_shift, 2),
             )
 
-            src, dst = self._match_beads(
-                ref_centers, mov_centers, coarse_shift, scale=scale
-            )
+            src, dst = self._match_beads(ref_centers, mov_centers, coarse_shift)
             self._logger.info(
                 "ch%d: %d bead pairs matched (max_distance=%.1f)",
                 ch,
@@ -271,50 +264,46 @@ class _BaseChromaticShiftCorrector:
 
         ref_ch = self._result.reference_channel
 
-        # Re-use the matched bead pairs stored during measure() so that validate()
-        # is independent of image warping artifacts (cubic interpolation ringing in
-        # the corrected image would otherwise create hundreds of spurious peaks).
-        # If detection_threshold is overridden we fall back to fresh detection.
-        if detection_threshold is not None:
-            scale = (
-                np.asarray(self.voxel_size, dtype=np.float64)
-                if self.voxel_size is not None
-                else None
-            )
-            ref_img = self._normalise(self._bead_stack[ref_ch])
-            ref_centers = self._detect_beads(ref_img, threshold_rel=detection_threshold)
-            pairs: dict[int, tuple[NDArray, NDArray]] = {}
-            for ch in range(self._bead_stack.shape[0]):
-                if ch == ref_ch or ch not in self._result.transforms:
-                    continue
-                mov_img = self._normalise(self._bead_stack[ch])
-                mov_centers = self._detect_beads(
-                    mov_img, threshold_rel=detection_threshold
-                )
-                coarse = (
-                    ref_centers.mean(axis=0) - mov_centers.mean(axis=0)
-                    if len(ref_centers) > 0 and len(mov_centers) > 0
-                    else np.zeros(self._spatial_ndim)
-                )
-                src_p, dst_p = self._match_beads(
-                    ref_centers, mov_centers, coarse, scale=scale
-                )
-                pairs[ch] = (src_p, dst_p)
-        else:
-            pairs = self._matched_pairs
+        # Re-detect beads in the original (uncorrected) bead stack, apply the
+        # fitted transform to the moving-channel *positions*, then match the
+        # corrected positions against the reference with a tight threshold.
+        # This avoids image-warp artifacts (cubic ringing inflates peak counts in
+        # the warped volume) while remaining independent from the RANSAC inlier set.
+        ref_img = self._normalise(self._bead_stack[ref_ch])
+        ref_centers = self._detect_beads(ref_img, threshold_rel=detection_threshold)
 
         stats: dict[int, dict] = {}
-        for ch, (src, dst) in pairs.items():
+        for ch in range(self._bead_stack.shape[0]):
             if ch == ref_ch or ch not in self._result.transforms:
                 continue
-            if len(src) == 0:
-                stats[ch] = self._residual_stats(src, dst)
+
+            mov_img = self._normalise(self._bead_stack[ch])
+            mov_centers = self._detect_beads(
+                mov_img, threshold_rel=detection_threshold
+            )
+            if len(mov_centers) == 0:
+                stats[ch] = self._residual_stats(
+                    np.empty((0, self._spatial_ndim)),
+                    np.empty((0, self._spatial_ndim)),
+                )
                 continue
+
+            # Apply the fitted transform to every detected moving position so
+            # that they land in the reference frame.
             tform = self._result.transforms[ch].transform
-            dst_xy = dst[:, ::-1]           # array (z,y,x) → skimage (x,y,z)
-            dst_corrected_xy = tform(dst_xy)
-            dst_corrected = dst_corrected_xy[:, ::-1]   # back to (z,y,x)
-            stats[ch] = self._residual_stats(src, dst_corrected)
+            mov_xy = mov_centers[:, ::-1]          # (z,y,x) → skimage (x,y,z)
+            corrected_xy = tform(mov_xy)
+            corrected_centers = corrected_xy[:, ::-1]   # back to (z,y,x)
+
+            # Match corrected moving positions against reference positions using
+            # a tight threshold (= RANSAC residual_threshold = 2 px) — after a
+            # good correction every bead should be within ~0.5 px.
+            src, dst = self._match_beads(
+                ref_centers,
+                corrected_centers,
+                shift=np.zeros(self._spatial_ndim),
+            )
+            stats[ch] = self._residual_stats(src, dst)
 
         if self.verbose:
             self._print_validation(stats, ref_ch)
@@ -534,15 +523,12 @@ class _BaseChromaticShiftCorrector:
         ref_centers: NDArray,
         mov_centers: NDArray,
         shift: tuple | NDArray | None = None,
-        scale: NDArray | None = None,
     ) -> tuple[NDArray, NDArray]:
         """
         Mutual nearest-neighbour matching after applying a coarse shift.
 
-        ``scale`` (per-axis, e.g. a voxel size) rescales coordinates *only for
-        the KD-tree distance metric*, so matching is physically isotropic for
-        anisotropic data.  Returns ``(src, dst)`` arrays of matched centres in
-        array (z, y, x) order.
+        All distances are in voxels; ``match_max_distance`` is always in voxels.
+        Returns ``(src, dst)`` arrays of matched centres in array (z, y, x) order.
         """
         d = self._spatial_ndim
         if shift is None:
@@ -552,18 +538,11 @@ class _BaseChromaticShiftCorrector:
 
         shifted_mov = mov_centers + np.asarray(shift)
 
-        if scale is not None:
-            ref_q = ref_centers * scale
-            mov_q = shifted_mov * scale
-        else:
-            ref_q = ref_centers
-            mov_q = shifted_mov
+        fwd_tree = cKDTree(shifted_mov)
+        fwd_dists, fwd_idx = fwd_tree.query(ref_centers, k=1)
 
-        fwd_tree = cKDTree(mov_q)
-        fwd_dists, fwd_idx = fwd_tree.query(ref_q, k=1)
-
-        rev_tree = cKDTree(ref_q)
-        _, rev_idx = rev_tree.query(mov_q, k=1)
+        rev_tree = cKDTree(ref_centers)
+        _, rev_idx = rev_tree.query(shifted_mov, k=1)
 
         src_list, dst_list = [], []
         for i, (dist, j) in enumerate(zip(fwd_dists, fwd_idx, strict=False)):
