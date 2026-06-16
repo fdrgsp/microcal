@@ -48,7 +48,7 @@ Estimates the chromatic shift transform for each channel relative to the referen
 | `smooth_sigma` | `2.0` | Gaussian blur σ (pixels) applied before peak detection. Set to match the apparent bead PSF radius. Typical: 1–2 px for 100 nm beads at 100×, 2–3 px for 200 nm beads at 60×. |
 | `min_distance` | `10` | Minimum centre-to-centre distance (pixels) between two accepted bead peaks. Peaks closer than this are merged (only the brightest survives). |
 | `threshold_rel` | `0.1` | Minimum peak intensity as a fraction of the image maximum (after smoothing). Too high → dim beads missed. Too low → noise spikes counted as beads. |
-| `match_max_distance` | `10.0` | Maximum distance (pixels) for two bead centres to be paired. Must be larger than the residual displacement after the coarse shift, and smaller than the minimum inter-bead spacing. |
+| `match_max_distance` | `10.0` | Maximum distance for two bead centres to be paired, **in pixels**. Must be larger than the residual displacement after the coarse shift, and smaller than the minimum inter-bead spacing. |
 | `min_pairs` | `4` | Minimum number of matched pairs required before fitting a full transform. If fewer are found, a translation-only fallback is used. |
 | `subpixel_refine` | `True` | Refine pixel-level peak positions to sub-pixel accuracy using intensity-weighted centroid. Recommended; improves accuracy ~5–10×. |
 | `refine_radius` | `5` | Half-width (pixels) of the patch used for sub-pixel centroid refinement. Should be ≥ `smooth_sigma`. |
@@ -283,7 +283,7 @@ ChromaticShiftCorrector3D.measure(
 | `smooth_sigma` | Scalar or per-axis `(sz, sy, sx)`. Use a per-axis value for anisotropic stacks where the PSF is axially elongated. |
 | `min_distance` | Scalar (isotropic in voxels) or per-axis `(mz, my, mx)`, which builds an anisotropic exclusion footprint (e.g. a smaller axial separation). |
 | `refine_radius` | Scalar or per-axis `(rz, ry, rx)` half-width of the centroid-refinement patch. |
-| `voxel_size` | Optional physical voxel size `(z, y, x)`. When given, bead matching uses a physically isotropic metric (so `match_max_distance` is interpreted in physical units) and `validate()` reports residuals in physical units. `None` ⇒ pure voxel units. |
+| `voxel_size` | Optional physical voxel size `(z, y, x)` in any consistent unit (e.g. µm). When given, bead matching uses a physically isotropic metric and **`match_max_distance` is reinterpreted in the same physical unit** (not voxels). `validate()` additionally reports residuals in physical units. `None` ⇒ pure voxel units throughout. |
 
 The fitted transform always lives in **voxel space**, so the correction is correct regardless of `voxel_size`; that argument only affects matching robustness and residual reporting.
 

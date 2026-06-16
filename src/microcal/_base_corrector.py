@@ -579,6 +579,19 @@ class _BaseChromaticShiftCorrector:
             tform = estimated if estimated else tform_cls()
             inliers = np.ones(len(src), dtype=bool)
 
+        # Guard against a degenerate (singular) matrix — can occur when bead
+        # positions are nearly coplanar in z (e.g. thin z-stacks) or when
+        # match_max_distance is too large and produces chaotic correspondences.
+        if abs(float(np.linalg.det(tform.params))) < 1e-6:
+            cls._logger.warning(
+                "Fitted transform is singular (det ≈ 0); bead positions may be "
+                "nearly coplanar or match_max_distance too large. "
+                "Falling back to identity (no correction). Check your parameters."
+            )
+            d = src_xy.shape[1]
+            tform = AffineTransform(matrix=np.eye(d + 1))
+            inliers = np.ones(len(src), dtype=bool)
+
         predicted = tform(dst_xy[inliers])
         rms = float(
             np.sqrt(np.mean(np.sum((predicted - src_xy[inliers]) ** 2, axis=1)))
