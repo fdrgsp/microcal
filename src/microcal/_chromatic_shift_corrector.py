@@ -218,7 +218,7 @@ class ChromaticShiftCorrector(_BaseChromaticShiftCorrector):
             # tform maps ch(x,y) → ref(x,y).  warp() needs the inverse mapping
             # (ref → ch) to know where to sample the channel image for each
             # output pixel.  tform.inverse is that mapping.
-            corrected[ch] = warp(
+            warped = warp(
                 image_or_stack[ch].astype(np.float64),
                 tform.inverse,
                 order=3,
@@ -226,6 +226,7 @@ class ChromaticShiftCorrector(_BaseChromaticShiftCorrector):
                 cval=0.0,
                 preserve_range=True,
             )
+            corrected[ch] = np.clip(warped, 0.0, float(image_or_stack[ch].max()))
 
             if crop:
                 ch_valid = warp(

@@ -202,7 +202,7 @@ class ChromaticShiftCorrector3D(_BaseChromaticShiftCorrector):
 
             tform = result.transforms[ch].transform
             matrix, offset = self._ndimage_params(tform)
-            corrected[ch] = affine_transform(
+            warped = affine_transform(
                 image_or_stack[ch].astype(np.float64),
                 matrix,
                 offset=offset,
@@ -210,6 +210,7 @@ class ChromaticShiftCorrector3D(_BaseChromaticShiftCorrector):
                 mode="constant",
                 cval=0.0,
             )
+            corrected[ch] = np.clip(warped, 0.0, float(image_or_stack[ch].max()))
 
             if crop:
                 ch_valid = affine_transform(

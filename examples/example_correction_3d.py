@@ -17,7 +17,7 @@ scale_z, scale_y, scale_x = (0.5, 0.1, 0.1)
 
 beads_vol, _ = generate_beads_image_3d(
     n_channels=2,
-    shape=(32, 256, 256),
+    shape=(64, 256, 256),
     n_beads=60,
     bead_sigma=(1.5, 2.0, 2.0),  # (sz, sy, sx)
     bead_intensity=60.0,
