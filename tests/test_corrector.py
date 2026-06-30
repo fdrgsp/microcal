@@ -626,3 +626,63 @@ def test_base_class_hooks_not_implemented() -> None:
         base._build_detection_image(img, {})
     with pytest.raises(NotImplementedError):
         base._build_pairs_image(img, {})
+
+
+# ---------------------------------------------------------------------------
+# crop — largest all-channels-valid box
+# ---------------------------------------------------------------------------
+
+
+def test_largest_valid_box_translation_is_exact_intersection() -> None:
+    """For a translation (rectangular valid region) the box is the rectangle."""
+    mask = np.zeros((12, 14), dtype=bool)
+    mask[2:10, 3:13] = True
+    box = _BaseChromaticShiftCorrector._largest_valid_box(mask)
+    assert box == (slice(2, 10), slice(3, 13))
+    assert mask[box].all()
+
+
+def test_largest_valid_box_excludes_rotation_corners() -> None:
+    """A tilted valid region: the box must exclude every invalid corner pixel."""
+    mask = np.ones((40, 40), dtype=bool)
+    for i in range(8):  # carve triangular invalid corners (as a rotation does)
+        mask[i, : 8 - i] = False
+        mask[i, 40 - (8 - i) :] = False
+        mask[39 - i, : 8 - i] = False
+        mask[39 - i, 40 - (8 - i) :] = False
+    box = _BaseChromaticShiftCorrector._largest_valid_box(mask)
+    assert mask[box].all()  # no invalid (single-channel) pixel is retained
+    # but it still keeps the large central region, not an over-cropped sliver
+    assert (box[0].stop - box[0].start) >= 24
+    assert (box[1].stop - box[1].start) >= 24
+
+
+def test_apply_crop_under_rotation_region_fully_valid(
+    bead_3ch: tuple[np.ndarray, dict],
+) -> None:
+    """After a rotated correction, the crop box is fully covered by every channel."""
+    from skimage.transform import warp
+
+    img, _ = bead_3ch  # channels include rotation + anisotropic scale
+    sc = ChromaticShiftCorrector()
+    sc.measure(
+        img,
+        smooth_sigma=2,
+        min_distance=5,
+        threshold_rel=0.3,
+        match_max_distance=20,
+        min_pairs=3,
+        refine_radius=3,
+    )
+    assert sc._result is not None
+
+    # rebuild apply()'s all-channels-valid mask, then assert the chosen crop box
+    # contains no pixel that is zero-filled in any channel.
+    full = np.ones(img.shape[1:], dtype=np.float64)
+    mask = np.ones(img.shape[1:], dtype=bool)
+    for ct in sc._result.transforms.values():
+        mask &= warp(full, ct.transform.inverse, order=0, preserve_range=True) > 0.5
+    box = _BaseChromaticShiftCorrector._largest_valid_box(mask)
+    assert mask[box].all()
+    # the crop is a real reduction (rotation pushes some border out of overlap)
+    assert mask[box].size < mask.size

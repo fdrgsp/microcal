@@ -9,7 +9,8 @@
 
 - [Installation](#installation)
 - [Chromatic Shift Correction](#chromatic-shift-correction)
-  - [Example Usage](#example-usage)
+  - [Method 1 — multi-colour beads](#method-1--multi-colour-beads)
+  - [Method 2 — continuous structures (marker-free)](#method-2--continuous-structures-marker-free)
 - [API Reference](#api-reference)
 
 ## Installation
@@ -58,9 +59,23 @@ uv sync --extra ndv-jup
 
 ## Chromatic shift correction
 
-For a detail explanation of the chromatic shift correction workflow and the underlying algorithms, see the chromatic shift correction [documentation](chromatic_shift_correction.md).
+`microcal` provides **two interchangeable methods** to estimate the per-channel
+transform. Both feed the same RANSAC fit and the same
+`measure` → `validate` → `apply` → `save` / `from_json` workflow, and each has a
+2-D (`ChromaticShiftCorrector`) and a 3-D (`ChromaticShiftCorrector3D`) variant.
+Pick the one that matches your calibration sample:
 
-### Example usage
+| Method | `method=` | Best for | How correspondences are found |
+| --- | --- | --- | --- |
+| **1 — Beads** | `"beads"` (default) | A good-quality, sparse **multi-colour bead** sample | Detects isolated bead maxima and matches them between channels |
+| **2 — Correlation** | `"correlation"` | A **continuous structure stained in several colours** (e.g. the same mitochondria imaged in two channels) — also works on beads | Tiles the image into blocks and measures each block's sub-pixel shift by FFT phase correlation |
+
+For a detailed explanation of both pipelines and the underlying algorithms, see
+the chromatic shift correction [documentation](chromatic_shift_correction.md).
+
+### Method 1 — multi-colour beads
+
+Use `method="beads"` (the default) with a sparse bead calibration image.
 
 ```python
 import tifffile
@@ -102,19 +117,14 @@ csc2 = ChromaticShiftCorrector.from_json("calibration.json")
 corrected = csc2.apply(sample_img, crop=True)
 ```
 
-For a complete runnable example see the [examples/](examples/) folder:
+Runnable 2-D bead example (script or notebook):
 
 ```bash
-# Python script
 uv run examples/example_correction.py
-
-# Jupyter notebook
 uvx juv run examples/example_correction.ipynb
 ```
 
-### Volumetric (3-D) correction
-
-For z-stacks shaped `(C, Z, Y, X)` use `ChromaticShiftCorrector3D`. The API mirrors
+**Volumetric (3-D).** For z-stacks shaped `(C, Z, Y, X)` use `ChromaticShiftCorrector3D`. The API mirrors
 the 2-D corrector — `measure()` / `validate()` / `apply()` / `save()` / `from_json()` —
 but fits a 4×4 (3-D) affine and warps with `scipy.ndimage.affine_transform`.
 Because z-stacks are anisotropic (axial step ≫ lateral pixel), `smooth_sigma` and
@@ -150,11 +160,55 @@ csc.save("calibration_3d.json")
 csc2 = ChromaticShiftCorrector3D.from_json("calibration_3d.json")
 ```
 
-Runnable 3-D example:
+Runnable 3-D bead example:
 
 ```bash
 uv run examples/example_correction_3d.py
 uvx juv run examples/example_correction_3d.ipynb
+```
+
+### Method 2 — continuous structures (marker-free)
+
+When the sample has no isolated point sources — for example a **continuous
+structure stained in several colours** (the same mitochondrial/membrane construct
+imaged in two channels) — bead detection has nothing to localise. Pass
+`method="correlation"` to either corrector to estimate the transform with
+**marker-free block phase correlation** instead: the image is tiled into
+overlapping blocks, each block's sub-pixel shift between channels is measured by
+FFT phase correlation, and the field of local shifts is fit to the same affine
+transform with RANSAC. The output (one matrix per channel) and the
+`validate` / `apply` / `save` / `from_json` workflow are identical to the bead
+method — only the correspondence step changes. It also works on bead samples.
+
+```python
+import tifffile
+from microcal import ChromaticShiftCorrector
+
+# A multi-channel image of a continuous structure (no beads needed)
+img = tifffile.imread("structure.tiff")   # e.g. (2, 512, 512)
+
+csc = ChromaticShiftCorrector()
+csc.measure(
+    img,
+    method="correlation",
+    block_size=128,        # block edge in px (tuple for per-axis sizes)
+    block_overlap=0.5,     # 50 % overlap between adjacent blocks
+    correlation_upsample=10,   # sub-pixel up-sampling factor
+    min_correlation=0.1,   # drop flat / poorly-correlated blocks
+)
+csc.validate()                       # residual block shift after correction
+corrected = csc.apply(img, crop=True)
+```
+
+The same `method="correlation"` option works for `ChromaticShiftCorrector3D`
+(blocks become sub-volumes; `block_size` defaults to the anisotropic
+`(16, 64, 64)`). The package ships `generate_structures_image` /
+`generate_structures_image_3d` to create synthetic continuous-structure samples
+for experimentation:
+
+```bash
+uv run examples/example_correction_correlation.py        # 2-D
+uv run examples/example_correction_correlation_3d.py     # 3-D
 ```
 
 ## API reference

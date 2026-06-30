@@ -2,7 +2,7 @@
 Shared, dimension-agnostic machinery for chromatic shift correction.
 
 This module holds the parts of the bead-registration pipeline that are
-identical for 2-D ``(C, H, W)`` and 3-D ``(C, Z, Y, X)`` data: normalisation,
+identical for 2-D `(C, H, W)` and 3-D `(C, Z, Y, X)` data: normalisation,
 bead detection / sub-pixel refinement, mutual nearest-neighbour matching,
 RANSAC transform fitting, validation, and JSON save/load.
 
@@ -15,6 +15,7 @@ visualisation array builders).
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import warnings
@@ -23,9 +24,11 @@ from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
 from scipy.ndimage import gaussian_filter
+from scipy.ndimage import shift as ndi_shift
 from scipy.spatial import cKDTree
 from skimage.feature import peak_local_max
 from skimage.measure import ransac
+from skimage.registration import phase_cross_correlation
 from skimage.transform import (
     AffineTransform,
     EuclideanTransform,
@@ -59,15 +62,15 @@ class ChannelTransform:
 
 @dataclass
 class CorrectionResult:
-    """Return value of ``measure()``."""
+    """Return value of `measure()`."""
 
     reference_channel: int
     transforms: dict[int, ChannelTransform] = field(default_factory=dict)
     # Set by measure(): interleaved normalised images and filled bead masks for
-    # every channel.  ``(2*C, H, W)`` in 2-D, ``(2*C, Z, Y, X)`` in 3-D.
+    # every channel.  `(2*C, H, W)` in 2-D, `(2*C, Z, Y, X)` in 3-D.
     detection_image: NDArray | None = None
     # Set by measure(): int32 label image where every bead in a matched group
-    # shares the same non-zero integer.  ``(H, W)`` in 2-D, ``(Z, Y, X)`` in 3-D.
+    # shares the same non-zero integer.  `(H, W)` in 2-D, `(Z, Y, X)` in 3-D.
     pairs_image: NDArray | None = None
 
     def __repr__(self) -> str:
@@ -96,8 +99,8 @@ class _BaseChromaticShiftCorrector:
 
     Subclasses set :attr:`_spatial_ndim` (2 or 3) and :attr:`_ransac_min_samples`
     (3 or 4), point :attr:`_logger` at their own module logger, and override the
-    dimension-specific methods ``apply``, ``_build_detection_image`` and
-    ``_build_pairs_image``.
+    dimension-specific methods `apply`, `_build_detection_image` and
+    `_build_pairs_image`.
     """
 
     # Number of spatial axes (2 for (C, H, W), 3 for (C, Z, Y, X)).
@@ -117,6 +120,9 @@ class _BaseChromaticShiftCorrector:
         self._matched_pairs: dict[int, tuple[NDArray, NDArray]] = {}
         # Detection params stored after measure() so validate()/save() reuse them.
         self.transform_type: str = "affine"
+        # Correspondence strategy: "beads" (local-maxima detection) or
+        # "correlation" (marker-free block phase correlation).
+        self.method: str = "beads"
         self.smooth_sigma: float | tuple[float, ...] = 2.0
         self.min_distance: int | tuple[int, ...] = 10
         self.threshold_rel: float = 0.1
@@ -124,6 +130,11 @@ class _BaseChromaticShiftCorrector:
         self.min_pairs: int = 4
         self.subpixel_refine: bool = True
         self.refine_radius: int | tuple[int, ...] = 5
+        # Correlation-method params (ignored when method == "beads").
+        self.block_size: int | tuple[int, ...] = 128
+        self.block_overlap: float = 0.5
+        self.correlation_upsample: int = 10
+        self.min_correlation: float = 0.1
         # Physical voxel size (z, y, x); None ⇒ work in pixel/voxel units.
         self.voxel_size: tuple[float, ...] | None = None
         self.verbose: bool = False
@@ -141,15 +152,40 @@ class _BaseChromaticShiftCorrector:
             self._logger.addHandler(handler)
             self._logger.setLevel(logging.INFO)
 
+    def _store_correlation_params(
+        self,
+        method: str,
+        block_size: int | tuple[int, ...],
+        block_overlap: float,
+        correlation_upsample: int,
+        min_correlation: float,
+    ) -> None:
+        """Validate and store the shared correspondence-strategy parameters."""
+        if method not in ("beads", "correlation"):
+            raise ValueError(f"method must be 'beads' or 'correlation', got {method!r}")
+        if not (0.0 <= block_overlap < 1.0):
+            raise ValueError("block_overlap must be in [0, 1)")
+        if correlation_upsample < 1:
+            raise ValueError("correlation_upsample must be >= 1")
+        self.method = method
+        self.block_size = block_size
+        self.block_overlap = block_overlap
+        self.correlation_upsample = correlation_upsample
+        self.min_correlation = min_correlation
+
     def _fit_all(
         self,
         bead_stack: NDArray,
         reference_channel: int,
         transform_type: str,
     ) -> CorrectionResult:
-        """Run the full per-channel detect → match → fit loop and build viz.
+        """Run the full per-channel correspond → fit loop and build viz.
 
-        Assumes the detection parameters have already been stored on ``self``.
+        The per-channel `(src, dst)` correspondences come either from bead
+        detection + matching (`method="beads"`) or from marker-free block
+        phase correlation (`method="correlation"`); everything downstream
+        (RANSAC fitting, fallback, visualisation) is shared.  Assumes the
+        measure parameters have already been stored on `self`.
         """
         n_channels = bead_stack.shape[0]
         result = CorrectionResult(reference_channel=reference_channel)
@@ -158,68 +194,65 @@ class _BaseChromaticShiftCorrector:
         all_pairs: dict[int, tuple[NDArray, NDArray]] = {}
 
         ref_img = self._normalise(bead_stack[reference_channel])
-        ref_centers = self._detect_beads(ref_img)
-        all_centers[reference_channel] = ref_centers
-        self._logger.info(
-            "ch%d (reference): %d beads detected", reference_channel, len(ref_centers)
-        )
+        ref_centers: NDArray | None = None
+        if self.method == "beads":
+            ref_centers = self._detect_beads(ref_img)
+            all_centers[reference_channel] = ref_centers
+            self._logger.info(
+                "ch%d (reference): %d beads detected",
+                reference_channel,
+                len(ref_centers),
+            )
 
         for ch in range(n_channels):
             if ch == reference_channel:
                 continue
 
             mov_img = self._normalise(bead_stack[ch])
-            mov_centers = self._detect_beads(mov_img)
-            all_centers[ch] = mov_centers
 
-            # Coarse shift from centroid difference: robust to rotation and scale
-            # because the centroid of a symmetric bead distribution is unaffected
-            # by rotation/scale — only the translation component shifts it.
-            if len(ref_centers) > 0 and len(mov_centers) > 0:
-                coarse_shift = ref_centers.mean(axis=0) - mov_centers.mean(axis=0)
-            else:
-                coarse_shift = np.zeros(self._spatial_ndim)
-            self._logger.info(
-                "ch%d: %d beads detected | coarse shift (array order) = %s",
-                ch,
-                len(mov_centers),
-                np.round(coarse_shift, 2),
-            )
-
-            src, dst = self._match_beads(ref_centers, mov_centers, coarse_shift)
-            self._logger.info(
-                "ch%d: %d bead pairs matched (max_distance=%.1f)",
-                ch,
-                len(src),
-                self.match_max_distance,
-            )
-
-            if len(src) < self.min_pairs:
-                warnings.warn(
-                    f"Channel {ch}: only {len(src)} bead pairs found "
-                    f"(need {self.min_pairs}). Falling back to translation-only.",
-                    stacklevel=3,
+            if self.method == "correlation":
+                src, dst, coarse_shift = self._correlation_correspondences(
+                    ref_img, mov_img
                 )
-                tform = self._fit_translation(coarse_shift)
-                rms: float | None = None
-                n_pairs = 0
-                inlier_mask = np.zeros(len(src), dtype=bool)
-            else:
-                tform, rms, inlier_mask = self._fit_transform(src, dst, transform_type)
-                n_pairs = len(src)
+                # Reuse the bead visualisations by treating block centres as
+                # "points": reference grid (src) and moving positions (dst).
+                all_centers.setdefault(reference_channel, src)
+                all_centers[ch] = dst
                 self._logger.info(
-                    "ch%d: fit RMS = %.3f  transform =\n%s", ch, rms, tform.params
+                    "ch%d: %d correlation blocks kept | coarse shift "
+                    "(array order) = %s",
+                    ch,
+                    len(src),
+                    np.round(coarse_shift, 2),
                 )
-            # Store only RANSAC inlier pairs so validate() uses the same clean
-            # subset (outlier pairs inflate mean_error when the transform is applied).
-            all_pairs[ch] = (src[inlier_mask], dst[inlier_mask])
+            else:
+                assert ref_centers is not None  # set above for method == "beads"
+                mov_centers = self._detect_beads(mov_img)
+                all_centers[ch] = mov_centers
 
-            result.transforms[ch] = ChannelTransform(
-                channel=ch,
-                transform=tform,
-                rms_residual=rms,
-                n_pairs=n_pairs,
-            )
+                # Coarse shift from centroid difference: robust to rotation and
+                # scale because the centroid of a symmetric bead distribution is
+                # unaffected by rotation/scale — only translation shifts it.
+                if len(ref_centers) > 0 and len(mov_centers) > 0:
+                    coarse_shift = ref_centers.mean(axis=0) - mov_centers.mean(axis=0)
+                else:
+                    coarse_shift = np.zeros(self._spatial_ndim)
+                self._logger.info(
+                    "ch%d: %d beads detected | coarse shift (array order) = %s",
+                    ch,
+                    len(mov_centers),
+                    np.round(coarse_shift, 2),
+                )
+
+                src, dst = self._match_beads(ref_centers, mov_centers, coarse_shift)
+                self._logger.info(
+                    "ch%d: %d bead pairs matched (max_distance=%.1f)",
+                    ch,
+                    len(src),
+                    self.match_max_distance,
+                )
+
+            self._fit_channel(result, all_pairs, ch, src, dst, coarse_shift)
 
         self._result = result
         self._bead_stack = bead_stack
@@ -229,6 +262,47 @@ class _BaseChromaticShiftCorrector:
         result.pairs_image = self._build_pairs_image(bead_stack, all_pairs)
 
         return result
+
+    def _fit_channel(
+        self,
+        result: CorrectionResult,
+        all_pairs: dict[int, tuple[NDArray, NDArray]],
+        ch: int,
+        src: NDArray,
+        dst: NDArray,
+        coarse_shift: NDArray,
+    ) -> None:
+        """Fit + store one channel's transform from its `(src, dst)` pairs.
+
+        Shared by the bead and correlation paths: applies the `min_pairs`
+        check (with translation-only fallback), runs RANSAC, and records only
+        the RANSAC inlier pairs (so `validate()` uses the same clean subset —
+        outlier pairs inflate `mean_error` when the transform is applied).
+        """
+        if len(src) < self.min_pairs:
+            warnings.warn(
+                f"Channel {ch}: only {len(src)} correspondence pairs found "
+                f"(need {self.min_pairs}). Falling back to translation-only.",
+                stacklevel=3,
+            )
+            tform = self._fit_translation(coarse_shift)
+            rms: float | None = None
+            n_pairs = 0
+            inlier_mask = np.zeros(len(src), dtype=bool)
+        else:
+            tform, rms, inlier_mask = self._fit_transform(src, dst, self.transform_type)
+            n_pairs = len(src)
+            self._logger.info(
+                "ch%d: fit RMS = %.3f  transform =\n%s", ch, rms, tform.params
+            )
+        all_pairs[ch] = (src[inlier_mask], dst[inlier_mask])
+
+        result.transforms[ch] = ChannelTransform(
+            channel=ch,
+            transform=tform,
+            rms_residual=rms,
+            n_pairs=n_pairs,
+        )
 
     # ------------------------------------------------------------------
     # Validation (shared)
@@ -243,26 +317,32 @@ class _BaseChromaticShiftCorrector:
         Validate colocalization quality on the bead image used for calibration.
 
         Applies the stored correction to the bead stack that was passed to
-        ``measure()``, re-detects beads in each channel of the corrected image,
+        `measure()`, re-detects beads in each channel of the corrected image,
         and reports the residual displacement between matched bead pairs.
 
         Parameters
         ----------
         detection_threshold : float or None
-            Override ``threshold_rel`` for this validation pass only.
+            Override `threshold_rel` for this validation pass only.
 
         Returns
         -------
         dict[int, dict]
-            Per-channel dict with keys ``'mean_error'``, ``'median_error'``,
-            ``'max_error'``, ``'std_error'``, ``'n_pairs'`` and ``'residuals'``
+            Per-channel dict with keys `'mean_error'`, `'median_error'`,
+            `'max_error'`, `'std_error'`, `'n_pairs'` and `'residuals'`
             (per-pair distances).  The 3-D corrector adds per-axis and (when a
-            ``voxel_size`` is set) physical-unit residuals.
+            `voxel_size` is set) physical-unit residuals.
         """
         if self._result is None or self._bead_stack is None:
             raise RuntimeError("No calibration data available. Run measure() first.")
 
         ref_ch = self._result.reference_channel
+
+        if self.method == "correlation":
+            corr_stats = self._validate_correlation()
+            if self.verbose:
+                self._print_validation(corr_stats, ref_ch)
+            return corr_stats
 
         # Re-detect beads in the original (uncorrected) bead stack, apply the
         # fitted transform to the moving-channel *positions*, then match the
@@ -308,6 +388,29 @@ class _BaseChromaticShiftCorrector:
 
         return stats
 
+    def _validate_correlation(self) -> dict[int, dict]:
+        """Validation for `method="correlation"` (no beads to re-detect).
+
+        Applies the stored correction to the calibration stack, then re-measures
+        the residual block-wise shift between the reference and each *corrected*
+        moving channel.  A good correction drives those residual shifts toward
+        zero, so `_residual_stats` (which reports `||src - dst||` = the
+        per-block residual shift) summarises the leftover misalignment.
+        """
+        assert self._result is not None and self._bead_stack is not None
+        ref_ch = self._result.reference_channel
+        corrected = self.apply(self._bead_stack, crop=False)
+        ref_img = self._normalise(corrected[ref_ch])
+
+        stats: dict[int, dict] = {}
+        for ch in range(self._bead_stack.shape[0]):
+            if ch == ref_ch or ch not in self._result.transforms:
+                continue
+            mov_img = self._normalise(corrected[ch])
+            src, dst, _ = self._correlation_correspondences(ref_img, mov_img)
+            stats[ch] = self._residual_stats(src, dst)
+        return stats
+
     def _residual_stats(self, src: NDArray, dst: NDArray) -> dict:
         """Euclidean residual statistics for a set of matched bead pairs."""
         if len(src) == 0:
@@ -345,11 +448,12 @@ class _BaseChromaticShiftCorrector:
         Parameters
         ----------
         path : str or path-like
-            Destination file path (e.g. ``"calibration.json"``).
+            Destination file path (e.g. `"calibration.json"`).
         """
         result = self._resolve_result(None)
         measure_params: dict = {
             "transform_type": self.transform_type,
+            "method": self.method,
             "smooth_sigma": self.smooth_sigma,
             "min_distance": self.min_distance,
             "threshold_rel": self.threshold_rel,
@@ -357,6 +461,10 @@ class _BaseChromaticShiftCorrector:
             "min_pairs": self.min_pairs,
             "subpixel_refine": self.subpixel_refine,
             "refine_radius": self.refine_radius,
+            "block_size": self.block_size,
+            "block_overlap": self.block_overlap,
+            "correlation_upsample": self.correlation_upsample,
+            "min_correlation": self.min_correlation,
             "verbose": self.verbose,
         }
         if self.voxel_size is not None:
@@ -417,6 +525,7 @@ class _BaseChromaticShiftCorrector:
         corrector = cls()
         mp = data.get("measure_params", {})
         corrector.transform_type = mp.get("transform_type", corrector.transform_type)
+        corrector.method = mp.get("method", corrector.method)
         corrector.smooth_sigma = mp.get("smooth_sigma", corrector.smooth_sigma)
         corrector.min_distance = mp.get("min_distance", corrector.min_distance)
         corrector.threshold_rel = mp.get("threshold_rel", corrector.threshold_rel)
@@ -426,6 +535,16 @@ class _BaseChromaticShiftCorrector:
         corrector.min_pairs = mp.get("min_pairs", corrector.min_pairs)
         corrector.subpixel_refine = mp.get("subpixel_refine", corrector.subpixel_refine)
         corrector.refine_radius = mp.get("refine_radius", corrector.refine_radius)
+        # block_size may round-trip through JSON as a list; restore the tuple.
+        block_size = mp.get("block_size", corrector.block_size)
+        corrector.block_size = (
+            tuple(block_size) if isinstance(block_size, list) else block_size
+        )
+        corrector.block_overlap = mp.get("block_overlap", corrector.block_overlap)
+        corrector.correlation_upsample = mp.get(
+            "correlation_upsample", corrector.correlation_upsample
+        )
+        corrector.min_correlation = mp.get("min_correlation", corrector.min_correlation)
         corrector.verbose = mp.get("verbose", corrector.verbose)
         voxel_size = mp.get("voxel_size", None)
         corrector.voxel_size = tuple(voxel_size) if voxel_size is not None else None
@@ -462,7 +581,7 @@ class _BaseChromaticShiftCorrector:
     def _detect_beads(
         self, img: NDArray, threshold_rel: float | None = None
     ) -> NDArray:
-        """Return an ``(N, ndim)`` array of bead centres in array (z, y, x) order.
+        """Return an `(N, ndim)` array of bead centres in array (z, y, x) order.
 
         Works for any dimensionality; optionally sub-pixel refined.
         """
@@ -477,7 +596,7 @@ class _BaseChromaticShiftCorrector:
         return centers
 
     def _find_peaks(self, smoothed: NDArray, thr: float) -> NDArray:
-        """Local-maxima search supporting scalar or per-axis ``min_distance``."""
+        """Local-maxima search supporting scalar or per-axis `min_distance`."""
         md = self.min_distance
         if isinstance(md, (int, np.integer)):
             return peak_local_max(smoothed, min_distance=int(md), threshold_rel=thr)
@@ -491,7 +610,7 @@ class _BaseChromaticShiftCorrector:
     ) -> NDArray:
         """Intensity-weighted centroid refinement for sub-pixel localisation.
 
-        Dimension-agnostic: works on 2-D and 3-D images; ``radius`` may be a
+        Dimension-agnostic: works on 2-D and 3-D images; `radius` may be a
         scalar or one value per axis.
         """
         ndim = centers.shape[1]
@@ -525,8 +644,8 @@ class _BaseChromaticShiftCorrector:
         """
         Mutual nearest-neighbour matching after applying a coarse shift.
 
-        All distances are in voxels; ``match_max_distance`` is always in voxels.
-        Returns ``(src, dst)`` arrays of matched centres in array (z, y, x) order.
+        All distances are in voxels; `match_max_distance` is always in voxels.
+        Returns `(src, dst)` arrays of matched centres in array (z, y, x) order.
         """
         d = self._spatial_ndim
         if shift is None:
@@ -551,6 +670,132 @@ class _BaseChromaticShiftCorrector:
         if not src_list:
             return np.empty((0, d)), np.empty((0, d))
         return np.array(src_list), np.array(dst_list)
+
+    # ------------------------------------------------------------------
+    # Correlation-based correspondences (marker-free)
+    # ------------------------------------------------------------------
+
+    def _correlation_correspondences(
+        self, ref_img: NDArray, mov_img: NDArray
+    ) -> tuple[NDArray, NDArray, NDArray]:
+        """Block phase-correlation correspondences for any structured sample.
+
+        Tiles the two (already `_normalise`-d) images into overlapping blocks
+        and measures the sub-pixel translation of each block by FFT phase
+        correlation, returning matched reference/moving point pairs that feed
+        the shared RANSAC fitter exactly like bead centres.  Works for 2-D and
+        3-D because :func:`phase_cross_correlation` is N-D.
+
+        Unlike bead detection this needs no isolated maxima, so it works on
+        continuous structures (e.g. the same organelle stained in two colours).
+
+        Returns `(src, dst, coarse_shift)` in array order, matching the bead
+        path: `src` are reference positions, `dst` the corresponding moving
+        positions, and `coarse_shift` the global pre-alignment used for the
+        translation-only fallback.
+        """
+        ndim = self._spatial_ndim
+        shape = ref_img.shape
+
+        # 1. Global coarse alignment so each block only sees a small residual
+        #    shift (per-block phase correlation is reliable only for shifts
+        #    < block/2, and large shifts alias on repetitive textures). Plain
+        #    cross-correlation (normalization=None) is used because its error is
+        #    a usable confidence and it is far more robust than phase whitening
+        #    when the channels also differ by rotation/scale. The global shift is
+        #    applied only when that confidence clears ``min_correlation``;
+        #    otherwise (e.g. strong rotation/scale, where a single translation is
+        #    ill-defined) pre-alignment is skipped and each block's full shift is
+        #    measured directly.
+        coarse_shift, g_error, _ = phase_cross_correlation(
+            ref_img, mov_img, upsample_factor=1, normalization=None
+        )
+        coarse_shift = np.asarray(coarse_shift, dtype=np.float64)
+        if not np.isfinite(g_error) or (1.0 - float(g_error)) < self.min_correlation:
+            coarse_shift = np.zeros(ndim)
+        mov_aligned = (
+            ndi_shift(mov_img, coarse_shift, order=1, mode="constant")
+            if coarse_shift.any()
+            else mov_img
+        )
+
+        # 2. Block geometry: per-axis size (clamped to the image) and an integer
+        #    step derived from the fractional overlap.
+        bsize = self._as_int_tuple(self.block_size, ndim)
+        bsize = tuple(min(b, s) for b, s in zip(bsize, shape, strict=True))
+        step = tuple(max(1, round(b * (1.0 - self.block_overlap))) for b in bsize)
+        origins_per_axis = [
+            self._block_origins(shape[k], bsize[k], step[k]) for k in range(ndim)
+        ]
+        window = self._hann_window(bsize)
+        half = np.array(bsize, dtype=np.float64) / 2.0
+
+        src_list: list[NDArray] = []
+        dst_list: list[NDArray] = []
+        for origin in itertools.product(*origins_per_axis):
+            sl = tuple(slice(origin[k], origin[k] + bsize[k]) for k in range(ndim))
+            rb = ref_img[sl]
+            mb = mov_aligned[sl]
+            # Skip near-flat (background) blocks — phase correlation is
+            # meaningless there and would return a NaN error.
+            if rb.std() < 1e-6 or mb.std() < 1e-6:
+                continue
+            # `normalization=None` (plain cross-correlation) gives a usable
+            # error metric for the quality gate; the Hann window suppresses the
+            # FFT wrap-around that otherwise corrupts block phase correlation.
+            residual, error, _ = phase_cross_correlation(
+                rb * window,
+                mb * window,
+                upsample_factor=self.correlation_upsample,
+                normalization=None,
+            )
+            # Reject low-correlation blocks (moving/empty structure) and
+            # implausibly large residuals; RANSAC later removes any stragglers.
+            if not np.isfinite(error) or (1.0 - float(error)) < self.min_correlation:
+                continue
+            if not np.all(np.isfinite(residual)):
+                continue
+            if np.linalg.norm(residual) > half.min():
+                continue
+            center = np.array(origin, dtype=np.float64) + half
+            total_shift = coarse_shift + residual
+            src_list.append(center)
+            dst_list.append(center - total_shift)
+
+        if not src_list:
+            empty = np.empty((0, ndim))
+            return empty, empty.copy(), coarse_shift
+        return np.array(src_list), np.array(dst_list), coarse_shift
+
+    @staticmethod
+    def _as_int_tuple(value: int | tuple[int, ...], ndim: int) -> tuple[int, ...]:
+        """Coerce a scalar or per-axis block size into an `ndim`-tuple of ints."""
+        if isinstance(value, (int, np.integer)):
+            return (int(value),) * ndim
+        t = tuple(int(v) for v in value)
+        if len(t) != ndim:
+            raise ValueError(f"block_size must have {ndim} entries, got {len(t)}")
+        return t
+
+    @staticmethod
+    def _block_origins(extent: int, bsize: int, step: int) -> list[int]:
+        """Block start indices along one axis, always covering the far edge."""
+        if bsize >= extent:
+            return [0]
+        last = extent - bsize
+        origins = list(range(0, last + 1, step))
+        if origins[-1] != last:
+            origins.append(last)
+        return origins
+
+    @staticmethod
+    def _hann_window(bsize: tuple[int, ...]) -> NDArray:
+        """Separable N-D Hann window of shape `bsize`."""
+        w = np.ones(1, dtype=np.float64)
+        for b in bsize:
+            axis_win = np.hanning(b) if b > 1 else np.ones(1)
+            w = np.multiply.outer(w, axis_win)
+        return np.asarray(w[0], dtype=np.float64)
 
     @classmethod
     def _fit_transform(
@@ -613,7 +858,7 @@ class _BaseChromaticShiftCorrector:
     def _fit_translation(self, shift: NDArray) -> AffineTransform:
         """Build a pure-translation homogeneous transform of the right size.
 
-        ``shift`` is in array (z, y, x) order; the homogeneous matrix is in
+        `shift` is in array (z, y, x) order; the homogeneous matrix is in
         (x, y, z) order, hence the reversal.
         """
         shift = np.asarray(shift, dtype=np.float64)
@@ -622,8 +867,64 @@ class _BaseChromaticShiftCorrector:
         matrix[:d, d] = shift[::-1]
         return AffineTransform(matrix=matrix)
 
+    @staticmethod
+    def _crop_to_valid(arr: NDArray, valid_mask: NDArray) -> NDArray:
+        """Crop ``(C, *spatial)`` ``arr`` to the largest all-channels-valid box.
+
+        ``valid_mask`` is True only where *every* channel has real (not
+        zero-filled) data after warping.  The crop is the largest axis-aligned
+        box that lies entirely inside that region, so no retained pixel is
+        missing a channel — in particular the single-channel triangles a rotated
+        correction leaves at the corners are excluded.  If the channels do not
+        overlap at all, ``arr`` is returned unchanged.
+        """
+        if not valid_mask.any():
+            return arr
+        box = _BaseChromaticShiftCorrector._largest_valid_box(valid_mask)
+        if any(sl.stop <= sl.start for sl in box):
+            return arr
+        return arr[(slice(None), *box)]
+
+    @staticmethod
+    def _largest_valid_box(valid_mask: NDArray) -> tuple[slice, ...]:
+        """Largest axis-aligned box fully contained in ``valid_mask`` (all True).
+
+        The valid region after an affine warp is a convex tilted box, so the
+        box is grown to maximal by greedily trimming one boundary layer at a
+        time from whichever face holds the most invalid pixels until the whole
+        box is valid.  By convexity a non-valid box always has an invalid pixel
+        on some face, so this terminates at the maximal inscribed axis-aligned
+        box.  Works in any dimension (2-D images and 3-D volumes).
+        """
+        ndim = valid_mask.ndim
+        lo = [0] * ndim
+        hi = list(valid_mask.shape)  # exclusive upper bounds
+        while True:
+            sub = valid_mask[tuple(slice(lo[k], hi[k]) for k in range(ndim))]
+            if sub.size == 0 or sub.all():
+                break
+            # Trim inward by one layer on the boundary face (per axis, low/high
+            # side) that currently contains the most invalid pixels.
+            best_inv, best_axis, best_low = -1, -1, True
+            for k in range(ndim):
+                if hi[k] - lo[k] <= 1:
+                    continue
+                low_inv = int((~sub.take(0, axis=k)).sum())
+                high_inv = int((~sub.take(sub.shape[k] - 1, axis=k)).sum())
+                if low_inv > best_inv:
+                    best_inv, best_axis, best_low = low_inv, k, True
+                if high_inv > best_inv:
+                    best_inv, best_axis, best_low = high_inv, k, False
+            if best_axis < 0:
+                break
+            if best_low:
+                lo[best_axis] += 1
+            else:
+                hi[best_axis] -= 1
+        return tuple(slice(lo[k], hi[k]) for k in range(ndim))
+
     def _coerce_stack(self, image_or_stack: NDArray | list) -> NDArray:
-        """Normalise any accepted input form into a ``(C, *spatial)`` ndarray."""
+        """Normalise any accepted input form into a `(C, *spatial)` ndarray."""
         if isinstance(image_or_stack, np.ndarray):
             return image_or_stack
         if not isinstance(image_or_stack, list) or len(image_or_stack) == 0:

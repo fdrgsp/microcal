@@ -2,20 +2,20 @@
 Chromatic shift correction for 3-D (volumetric, multi-channel) microscopy.
 
 :class:`ChromaticShiftCorrector3D` mirrors the 2-D
-:class:`~microcal.ChromaticShiftCorrector` for z-stacks shaped ``(C, Z, Y, X)``.
+:class:`~microcal.ChromaticShiftCorrector` for z-stacks shaped `(C, Z, Y, X)`.
 The detection / matching / RANSAC pipeline is inherited unchanged from
 :class:`~microcal._base_corrector._BaseChromaticShiftCorrector`; this class only
-supplies the 3-D warp backend (``scipy.ndimage.affine_transform`` — skimage's
-``warp`` is 2-D only) and 3-D visualisation arrays.
+supplies the 3-D warp backend (`scipy.ndimage.affine_transform` — skimage's
+`warp` is 2-D only) and 3-D visualisation arrays.
 
 Anisotropy
 ----------
-Real z-stacks are anisotropic (axial step ≫ lateral pixel).  ``smooth_sigma``
-and ``refine_radius`` therefore accept either a scalar or a per-axis
-``(sz, sy, sx)`` tuple, and an optional ``voxel_size=(z, y, x)`` makes bead
+Real z-stacks are anisotropic (axial step ≫ lateral pixel).  `smooth_sigma`
+and `refine_radius` therefore accept either a scalar or a per-axis
+`(sz, sy, sx)` tuple, and an optional `voxel_size=(z, y, x)` makes bead
 matching physically isotropic and reports residuals in physical units.  The
 fitted transform itself always lives in voxel space, so the correction is
-correct regardless of ``voxel_size``.
+correct regardless of `voxel_size`.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ class ChromaticShiftCorrector3D(_BaseChromaticShiftCorrector):
     local-maxima detection, intensity-weighted sub-pixel refinement, centroid
     coarse alignment, mutual nearest-neighbour matching and RANSAC fitting —
     generalised to volumes.  Transforms are 4x4 homogeneous matrices and are
-    applied with ``scipy.ndimage.affine_transform``.
+    applied with `scipy.ndimage.affine_transform`.
     """
 
     _spatial_ndim: ClassVar[int] = 3
@@ -61,6 +61,7 @@ class ChromaticShiftCorrector3D(_BaseChromaticShiftCorrector):
         *,
         reference_channel: int = 0,
         transform_type: str = "affine",
+        method: str = "beads",
         smooth_sigma: float | tuple[float, float, float] = 2.0,
         min_distance: int | tuple[int, int, int] = 10,
         threshold_rel: float = 0.1,
@@ -68,46 +69,75 @@ class ChromaticShiftCorrector3D(_BaseChromaticShiftCorrector):
         min_pairs: int = 4,
         subpixel_refine: bool = True,
         refine_radius: int | tuple[int, int, int] = 5,
+        block_size: int | tuple[int, int, int] = (16, 64, 64),
+        block_overlap: float = 0.5,
+        correlation_upsample: int = 10,
+        min_correlation: float = 0.1,
         voxel_size: tuple[float, float, float] | None = None,
         verbose: bool = False,
     ) -> CorrectionResult:
         """
-        Estimate the chromatic shift from a multi-channel bead volume.
+        Estimate the chromatic shift from a multi-channel calibration volume.
+
+        As in 2-D, two correspondence strategies are available via `method`:
+        `"beads"` (default; detect + match discrete beads) or `"correlation"`
+        (marker-free block phase correlation over sub-volumes, for continuous
+        structures stained in several colours).  Both feed the same RANSAC fit
+        and produce one 4x4 affine matrix per channel.
 
         Parameters
         ----------
         bead_stack : NDArray, shape (C, Z, Y, X)
-            Multi-channel bead volume (float or uint).
+            Multi-channel calibration volume (float or uint).
         reference_channel : int
             Channel index used as the geometric reference.  Default 0.
         transform_type : str
             Transform to fit: 'affine' (default), 'similarity', 'euclidean' or
             'translation'.
+        method : str
+            Correspondence strategy: `"beads"` (default) or `"correlation"`.
         smooth_sigma : float or (sz, sy, sx)
-            Sigma (voxels) of the Gaussian pre-smoothing.  A tuple sets a
-            different value per axis — useful for anisotropic stacks.  Default 2.
+            (`method="beads"`) Sigma (voxels) of the Gaussian pre-smoothing.  A
+            tuple sets a different value per axis — useful for anisotropic stacks.
+            Default 2.
         min_distance : int or (mz, my, mx)
-            Minimum voxel distance between accepted peaks.  A tuple builds an
-            anisotropic exclusion footprint (e.g. a smaller axial separation).
-            Default 10.
+            (`method="beads"`) Minimum voxel distance between accepted peaks.  A
+            tuple builds an anisotropic exclusion footprint (e.g. a smaller axial
+            separation).  Default 10.
         threshold_rel : float
-            Minimum smoothed peak intensity as a fraction of the volume maximum.
-            Default 0.1.
+            (`method="beads"`) Minimum smoothed peak intensity as a fraction of
+            the volume maximum.  Default 0.1.
         match_max_distance : float
-            Maximum distance for a valid bead pair, in voxels (or physical units
-            when ``voxel_size`` is given).  Default 10.
+            (`method="beads"`) Maximum distance for a valid bead pair, in voxels
+            (or physical units when `voxel_size` is given).  Default 10.
         min_pairs : int
-            Minimum matched pairs before fitting; below this the corrector falls
-            back to translation-only.  Default 4.
+            Minimum matched pairs (beads or correlation blocks) before fitting;
+            below this the corrector falls back to translation-only.  Default 4.
         subpixel_refine : bool
-            If True (default), refine each peak with an intensity-weighted
-            centroid.
+            (`method="beads"`) If True (default), refine each peak with an
+            intensity-weighted centroid.
         refine_radius : int or (rz, ry, rx)
-            Half-width (voxels) of the centroid-refinement patch.  Default 5.
+            (`method="beads"`) Half-width (voxels) of the centroid-refinement
+            patch.  Default 5.
+        block_size : int or (bz, by, bx)
+            (`method="correlation"`) Edge length (voxels) of each correlation
+            sub-volume; a tuple sets a different size per axis (the default
+            `(16, 64, 64)` uses a thinner axial block for typical anisotropic
+            stacks).  Default `(16, 64, 64)`.
+        block_overlap : float
+            (`method="correlation"`) Fractional overlap of adjacent blocks, in
+            `[0, 1)`.  Default 0.5.
+        correlation_upsample : int
+            (`method="correlation"`) Up-sampling factor for sub-voxel phase
+            correlation.  Default 10.
+        min_correlation : float
+            (`method="correlation"`) Minimum normalised cross-correlation
+            quality (`1 - error`, in `[0, 1]`) for a block to be used.
+            Default 0.1.
         voxel_size : (z, y, x) or None
             Physical voxel size.  When given, bead matching uses a physically
-            isotropic metric and ``validate()`` additionally reports residuals
-            in physical units.  ``None`` (default) ⇒ pure voxel units.
+            isotropic metric and `validate()` additionally reports residuals
+            in physical units.  `None` (default) ⇒ pure voxel units.
         verbose : bool
             If True, emit progress logs.  Default False.
 
@@ -116,9 +146,9 @@ class ChromaticShiftCorrector3D(_BaseChromaticShiftCorrector):
         CorrectionResult
             One ChannelTransform (4x4 matrix) per non-reference channel, plus:
 
-            * ``result.detection_image`` — ``(2*C, Z, Y, X)`` float32, normalised
+            * `result.detection_image` — `(2*C, Z, Y, X)` float32, normalised
               channel volumes and filled-sphere bead masks interleaved.
-            * ``result.pairs_image`` — ``(Z, Y, X)`` int32 label volume where
+            * `result.pairs_image` — `(Z, Y, X)` int32 label volume where
               every bead in a matched group shares the same non-zero integer.
         """
         if voxel_size is not None and len(voxel_size) != 3:
@@ -135,6 +165,9 @@ class ChromaticShiftCorrector3D(_BaseChromaticShiftCorrector):
         self.refine_radius = refine_radius
         self.voxel_size = tuple(voxel_size) if voxel_size is not None else None
         self.verbose = verbose
+        self._store_correlation_params(
+            method, block_size, block_overlap, correlation_upsample, min_correlation
+        )
 
         self._setup_logger(verbose)
 
@@ -158,7 +191,7 @@ class ChromaticShiftCorrector3D(_BaseChromaticShiftCorrector):
         Apply the estimated correction to a volume or stack of volumes.
 
         Each non-reference channel is remapped into the reference frame with
-        tricubic interpolation (order=3) via ``scipy.ndimage.affine_transform``.
+        tricubic interpolation (order=3) via `scipy.ndimage.affine_transform`.
         Voxels outside the source volume are filled with 0.
 
         Parameters
@@ -166,9 +199,9 @@ class ChromaticShiftCorrector3D(_BaseChromaticShiftCorrector):
         image_or_stack : NDArray (C, Z, Y, X) | list[NDArray] | list[str]
             The multi-channel volume to correct.  Accepted forms:
 
-            * ``NDArray`` shape ``(C, Z, Y, X)`` — channel-first stack.
-            * ``list[NDArray]`` — one 3-D ``(Z, Y, X)`` volume per channel.
-            * ``list[str]`` — one file path per channel (read with tifffile).
+            * `NDArray` shape `(C, Z, Y, X)` — channel-first stack.
+            * `list[NDArray]` — one 3-D `(Z, Y, X)` volume per channel.
+            * `list[str]` — one file path per channel (read with tifffile).
 
         result : CorrectionResult or None
             Use a previously computed result.  Defaults to the stored result.
@@ -225,13 +258,13 @@ class ChromaticShiftCorrector3D(_BaseChromaticShiftCorrector):
 
     @staticmethod
     def _ndimage_params(tform: object) -> tuple[NDArray, NDArray]:
-        """Convert a skimage 4x4 transform to ``affine_transform`` arguments.
+        """Convert a skimage 4x4 transform to `affine_transform` arguments.
 
-        ``scipy.ndimage.affine_transform`` is a *pull* map (output → input) and
-        indexes in array order ``(z, y, x)``, whereas the fitted transform is in
-        ``(x, y, z)`` order.  We take the inverse transform (ref → ch) and
-        reverse the spatial axes: ``matrix = L[::-1, ::-1]`` and
-        ``offset = t[::-1]`` (conjugation by the axis-reversal permutation).
+        `scipy.ndimage.affine_transform` is a *pull* map (output → input) and
+        indexes in array order `(z, y, x)`, whereas the fitted transform is in
+        `(x, y, z)` order.  We take the inverse transform (ref → ch) and
+        reverse the spatial axes: `matrix = L[::-1, ::-1]` and
+        `offset = t[::-1]` (conjugation by the axis-reversal permutation).
         """
         inv = np.asarray(tform.inverse.params, dtype=np.float64)  # type: ignore[attr-defined]
         d = inv.shape[0] - 1
@@ -240,19 +273,6 @@ class ChromaticShiftCorrector3D(_BaseChromaticShiftCorrector):
         matrix = np.ascontiguousarray(linear[::-1, ::-1])
         offset = np.ascontiguousarray(translation[::-1])
         return matrix, offset
-
-    @staticmethod
-    def _crop_to_valid(arr: NDArray, valid_mask: NDArray) -> NDArray:
-        """Crop ``(C, *spatial)`` ``arr`` to the bounding box of ``valid_mask``."""
-        slices: list[slice] = []
-        ndim = valid_mask.ndim
-        for ax in range(ndim):
-            other = tuple(i for i in range(ndim) if i != ax)
-            present = np.where(valid_mask.any(axis=other))[0]
-            if present.size == 0:
-                return arr
-            slices.append(slice(int(present[0]), int(present[-1]) + 1))
-        return arr[(slice(None), *slices)]
 
     # ------------------------------------------------------------------
     # Residual reporting (adds per-axis / physical errors)
@@ -326,7 +346,7 @@ class ChromaticShiftCorrector3D(_BaseChromaticShiftCorrector):
     def _paint_spheres(
         self, vol: NDArray, centers: NDArray, radius: int, value: float
     ) -> None:
-        """Stamp filled spheres of ``value`` at each ``(z, y, x)`` centre."""
+        """Stamp filled spheres of `value` at each `(z, y, x)` centre."""
         offsets = self._sphere_offsets(radius)
         shape = np.array(vol.shape)
         for c in centers:

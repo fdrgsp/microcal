@@ -4,15 +4,15 @@
 
 ## `ChromaticShiftCorrector`
 
-```python
+``python
 from microcal import ChromaticShiftCorrector
-```
+``
 
 ### Constructor
 
-```python
+``python
 ChromaticShiftCorrector()
-```
+``
 
 No arguments. Detection and fitting parameters are passed to `measure()`.
 To load an existing calibration, use `ChromaticShiftCorrector.from_json()`.
@@ -21,12 +21,13 @@ To load an existing calibration, use `ChromaticShiftCorrector.from_json()`.
 
 ### `measure`
 
-```python
+``python
 ChromaticShiftCorrector.measure(
     bead_stack: NDArray,
     *,
     reference_channel: int    = 0,
     transform_type: str       = "affine",
+    method: str               = "beads",
     smooth_sigma: float       = 2.0,
     min_distance: int         = 10,
     threshold_rel: float      = 0.1,
@@ -34,24 +35,38 @@ ChromaticShiftCorrector.measure(
     min_pairs: int            = 4,
     subpixel_refine: bool     = True,
     refine_radius: int        = 5,
+    block_size: int | tuple[int, int] = 128,
+    block_overlap: float      = 0.5,
+    correlation_upsample: int = 10,
+    min_correlation: float    = 0.1,
     verbose: bool             = False,
 ) -> CorrectionResult
-```
+``
 
-Estimates the chromatic shift transform for each channel relative to the reference channel. **Always call this on a bead image**, never on a sample image. The result is stored internally and also returned — calling `apply()` or `validate()` afterwards does not require passing it explicitly.
+Estimates the chromatic shift transform for each channel relative to the reference channel. The result is stored internally and also returned — calling `apply()` or `validate()` afterwards does not require passing it explicitly.
+
+`method` selects the correspondence strategy:
+
+- `"beads"` (default) — detect and match discrete sub-resolution beads. Use on a sparse bead calibration image.
+- `"correlation"` — **marker-free** block phase correlation. The image is tiled into overlapping blocks, each block's sub-pixel shift between channels is measured by FFT cross-correlation, and the field of local shifts is fit to the same transform with RANSAC. Use on **continuous structures** stained in several colours (e.g. mitochondria), where bead detection finds nothing. Both methods produce the same output (one matrix per channel) and share `apply` / `validate` / `save` / `from_json`.
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
 | `bead_stack` | — | `NDArray` shape `(C, H, W)`, any integer or float dtype. |
 | `reference_channel` | `0` | Channel index used as the geometric reference. All other channels are registered to it. |
 | `transform_type` | `"affine"` | Type of geometric transform to fit. See options below. |
-| `smooth_sigma` | `2.0` | Gaussian blur σ (pixels) applied before peak detection. Set to match the apparent bead PSF radius. Typical: 1–2 px for 100 nm beads at 100×, 2–3 px for 200 nm beads at 60×. |
-| `min_distance` | `10` | Minimum centre-to-centre distance (pixels) between two accepted bead peaks. Peaks closer than this are merged (only the brightest survives). |
-| `threshold_rel` | `0.1` | Minimum peak intensity as a fraction of the image maximum (after smoothing). Too high → dim beads missed. Too low → noise spikes counted as beads. |
-| `match_max_distance` | `10.0` | Maximum distance **in pixels** for two bead centres to be paired. Must be larger than the residual displacement after the coarse shift, and smaller than the minimum inter-bead spacing. Always interpreted in pixels (voxels for 3-D), regardless of whether `voxel_size` is set. |
-| `min_pairs` | `4` | Minimum number of matched pairs required before fitting a full transform. If fewer are found, a translation-only fallback is used. |
-| `subpixel_refine` | `True` | Refine pixel-level peak positions to sub-pixel accuracy using intensity-weighted centroid. Recommended; improves accuracy ~5–10×. |
-| `refine_radius` | `5` | Half-width (pixels) of the patch used for sub-pixel centroid refinement. Should be ≥ `smooth_sigma`. |
+| `method` | `"beads"` | Correspondence strategy: `"beads"` or `"correlation"`. |
+| `smooth_sigma` | `2.0` | *(beads)* Gaussian blur σ (pixels) applied before peak detection. Set to match the apparent bead PSF radius. Typical: 1–2 px for 100 nm beads at 100×, 2–3 px for 200 nm beads at 60×. |
+| `min_distance` | `10` | *(beads)* Minimum centre-to-centre distance (pixels) between two accepted bead peaks. Peaks closer than this are merged (only the brightest survives). |
+| `threshold_rel` | `0.1` | *(beads)* Minimum peak intensity as a fraction of the image maximum (after smoothing). Too high → dim beads missed. Too low → noise spikes counted as beads. |
+| `match_max_distance` | `10.0` | *(beads)* Maximum distance **in pixels** for two bead centres to be paired. Must be larger than the residual displacement after the coarse shift, and smaller than the minimum inter-bead spacing. Always interpreted in pixels (voxels for 3-D), regardless of whether `voxel_size` is set. |
+| `min_pairs` | `4` | Minimum number of matched pairs (beads or correlation blocks) required before fitting a full transform. If fewer are found, a translation-only fallback is used. |
+| `subpixel_refine` | `True` | *(beads)* Refine pixel-level peak positions to sub-pixel accuracy using intensity-weighted centroid. Recommended; improves accuracy ~5–10×. |
+| `refine_radius` | `5` | *(beads)* Half-width (pixels) of the patch used for sub-pixel centroid refinement. Should be ≥ `smooth_sigma`. |
+| `block_size` | `128` | *(correlation)* Edge length (pixels) of each correlation block; a tuple sets a different size per axis. Larger blocks are more robust but give fewer correspondences. |
+| `block_overlap` | `0.5` | *(correlation)* Fractional overlap of adjacent blocks, in `[0, 1)`. Higher overlap → more (denser) correspondences. |
+| `correlation_upsample` | `10` | *(correlation)* Up-sampling factor for sub-pixel phase correlation (skimage `upsample_factor`). |
+| `min_correlation` | `0.1` | *(correlation)* Minimum normalised cross-correlation quality (`1 - error`, in `[0, 1]`) for a block to be used. Flat or poorly-correlated blocks below this are skipped (RANSAC removes any remaining outliers). |
 | `verbose` | `False` | If `True`, emit progress logs. |
 
 **`transform_type` options:**
@@ -67,14 +82,14 @@ Estimates the chromatic shift transform for each channel relative to the referen
 
 ### `apply`
 
-```python
+``python
 ChromaticShiftCorrector.apply(
     image_or_stack: NDArray | list[NDArray] | list[str],
     result: CorrectionResult | None = None,
     *,
     crop: bool = True,
 ) -> NDArray
-```
+``
 
 Applies the measured correction to any image stack. Returns the corrected stack with the same dtype as the input.
 
@@ -88,14 +103,17 @@ Applies the measured correction to any image stack. Returns the corrected stack 
 
 ### `validate`
 
-```python
+``python
 ChromaticShiftCorrector.validate(
     *,
     detection_threshold: float | None = None,
 ) -> dict[int, dict]
-```
+``
 
-Re-detects beads in the corrected bead calibration image and measures the residual displacement between channels. Call this after `measure()` to confirm the correction worked before applying it to sample data. No arguments are required — the corrector applies the correction to the stored bead stack internally. If `verbose=True` was passed to `measure()`, a summary table is logged automatically.
+Measures the residual misalignment after correction. Call this after `measure()` to confirm the correction worked before applying it to sample data. No arguments are required — the corrector applies the correction to the stored calibration stack internally. If `verbose=True` was passed to `measure()`, a summary table is logged automatically.
+
+- For `method="beads"`, it re-detects beads in the corrected image and reports the residual displacement between matched bead pairs.
+- For `method="correlation"`, it re-runs block phase correlation between the reference and each corrected channel and reports the residual per-block shift (the keys below are the same; `detection_threshold` is ignored).
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
@@ -124,11 +142,11 @@ Re-detects beads in the corrected bead calibration image and measures the residu
 
 ### `save`
 
-```python
+``python
 ChromaticShiftCorrector.save(path: str | os.PathLike) -> None
-```
+``
 
-Saves the calibration to a JSON file. The file contains the reference channel, all transform matrices (3×3 affine, RMS residuals, pair counts), and the full set of `measure()` parameters used to produce them. The bead image is not stored. The saved file is sufficient to reconstruct the corrector for `apply()` via `from_json()`.
+Saves the calibration to a JSON file. The file contains the reference channel, all transform matrices (3×3 affine, RMS residuals, pair counts), and the full set of `measure()` parameters used to produce them (including `method` and the correlation parameters). The calibration image is not stored. The saved file is sufficient to reconstruct the corrector for `apply()` via `from_json()`.
 
 | Parameter | Meaning |
 | --- | --- |
@@ -138,9 +156,9 @@ Saves the calibration to a JSON file. The file contains the reference channel, a
 
 ### `from_json`
 
-```python
+``python
 ChromaticShiftCorrector.from_json(path: str | os.PathLike) -> ChromaticShiftCorrector
-```
+``
 
 Class method. Loads a calibration saved by `save()` and returns a corrector ready to call `apply()`. All `measure()` parameters from the original calibration run are restored on the instance (e.g. `csc.smooth_sigma`, `csc.transform_type`). `validate()` is not available on a loaded instance (the bead image is not stored in the file); `measure()` can still be called to re-calibrate.
 
@@ -150,33 +168,33 @@ Class method. Loads a calibration saved by `save()` and returns a corrector read
 
 **Example:**
 
-```python
+``python
 csc = ChromaticShiftCorrector.from_json("calibration.json")
 corrected = csc.apply(sample_image)
-```
+``
 
 ---
 
 ## `CorrectionResult`
 
-```python
+``python
 from microcal import CorrectionResult
-```
+``
 
 Returned by `measure()`. All fields are readable directly.
 
-```python
+``python
 result.reference_channel   # int — index of the reference channel
 result.transforms          # dict[int, ChannelTransform] — one entry per non-reference channel
 result.detection_image     # NDArray (2*C, H, W) float32 — interleaved normalised channel
                            #   images and filled-disk bead masks: [img_ch0, beads_ch0, ...]
 result.pairs_image         # NDArray (H, W) int32 — label image; beads in the same matched
                            #   group share the same non-zero integer (display with Glasbey LUT)
-```
+``
 
 Printing a `CorrectionResult` shows the RMS and 3×3 transform matrix for each channel:
 
-```python
+``python
 print(result)
 # CorrectionResult(reference=0)
 #   ch1: rms=0.082px  n_pairs=48
@@ -184,13 +202,13 @@ print(result)
 # [[ 1.002  0.003 -1.521]
 #  [-0.003  0.998  2.489]
 #  [ 0.     0.     1.   ]]
-```
+``
 
 ---
 
 ## `ChannelTransform`
 
-```python
+``python
 from microcal import ChannelTransform
 
 ct = result.transforms[1]
@@ -199,7 +217,7 @@ ct.transform         # skimage.transform.AffineTransform — 3×3 matrix in (x, 
 ct.transform.params  # NDArray — the 3×3 homogeneous matrix
 ct.rms_residual      # float | None — RMS of inlier bead pairs after fitting, in pixels
 ct.n_pairs           # int — number of bead pairs used
-```
+``
 
 The 3×3 matrix maps `[x_ch, y_ch, 1]ᵀ → [x_ref, y_ref, 1]ᵀ` where `(x, y) = (col, row)`.
 
@@ -207,7 +225,7 @@ The 3×3 matrix maps `[x_ch, y_ch, 1]ᵀ → [x_ref, y_ref, 1]ᵀ` where `(x, y)
 
 ## `generate_beads_image`
 
-```python
+``python
 from microcal import generate_beads_image
 
 image, metadata = generate_beads_image(
@@ -224,7 +242,7 @@ image, metadata = generate_beads_image(
     snr: float = 20.0,
     seed: int | None = 42,
 ) -> tuple[NDArray, dict]
-```
+``
 
 Generates a synthetic multi-channel bead image for testing and development. Returns a `(C, H, W)` uint array and a metadata dict.
 
@@ -247,9 +265,9 @@ Generates a synthetic multi-channel bead image for testing and development. Retu
 
 ## `ChromaticShiftCorrector3D`
 
-```python
+``python
 from microcal import ChromaticShiftCorrector3D
-```
+``
 
 The volumetric counterpart of `ChromaticShiftCorrector` for z-stacks shaped `(C, Z, Y, X)`. The pipeline, return types and method names are identical — `measure()`, `apply()`, `validate()`, `save()`, `from_json()` — so the tables above apply, with the following 3-D differences:
 
@@ -260,12 +278,13 @@ The volumetric counterpart of `ChromaticShiftCorrector` for z-stacks shaped `(C,
 
 ### `measure` — additional / changed parameters
 
-```python
+``python
 ChromaticShiftCorrector3D.measure(
     bead_stack: NDArray,                 # (C, Z, Y, X)
     *,
     reference_channel: int = 0,
     transform_type: str = "affine",
+    method: str = "beads",
     smooth_sigma: float | tuple[float, float, float] = 2.0,   # scalar or (sz, sy, sx)
     min_distance: int | tuple[int, int, int] = 10,            # scalar or (mz, my, mx)
     threshold_rel: float = 0.1,
@@ -273,17 +292,24 @@ ChromaticShiftCorrector3D.measure(
     min_pairs: int = 4,
     subpixel_refine: bool = True,
     refine_radius: int | tuple[int, int, int] = 5,            # scalar or (rz, ry, rx)
+    block_size: int | tuple[int, int, int] = (16, 64, 64),    # scalar or (bz, by, bx)
+    block_overlap: float = 0.5,
+    correlation_upsample: int = 10,
+    min_correlation: float = 0.1,
     voxel_size: tuple[float, float, float] | None = None,     # (z, y, x)
     verbose: bool = False,
 ) -> CorrectionResult
-```
+``
 
 | Parameter | Meaning (3-D specifics) |
 | --- | --- |
-| `smooth_sigma` | Scalar or per-axis `(sz, sy, sx)`. Use a per-axis value for anisotropic stacks where the PSF is axially elongated. |
-| `min_distance` | Scalar (isotropic in voxels) or per-axis `(mz, my, mx)`, which builds an anisotropic exclusion footprint (e.g. a smaller axial separation). |
-| `refine_radius` | Scalar or per-axis `(rz, ry, rx)` half-width of the centroid-refinement patch. |
-| `voxel_size` | Optional physical voxel size `(z, y, x)` in any consistent unit (e.g. µm). When given, `validate()` additionally reports residuals in physical units (`mean_error_physical` etc.). Does **not** change the unit of `match_max_distance`, which is always in voxels. `None` ⇒ voxel-unit residuals only. |
+| `method` | `"beads"` (default) or `"correlation"`. The correlation method tiles the volume into sub-volumes and measures each block's sub-voxel shift by 3-D phase correlation — the marker-free path for continuous structures. |
+| `smooth_sigma` | *(beads)* Scalar or per-axis `(sz, sy, sx)`. Use a per-axis value for anisotropic stacks where the PSF is axially elongated. |
+| `min_distance` | *(beads)* Scalar (isotropic in voxels) or per-axis `(mz, my, mx)`, which builds an anisotropic exclusion footprint (e.g. a smaller axial separation). |
+| `refine_radius` | *(beads)* Scalar or per-axis `(rz, ry, rx)` half-width of the centroid-refinement patch. |
+| `block_size` | *(correlation)* Scalar or per-axis `(bz, by, bx)` edge length (voxels) of each correlation sub-volume. The default `(16, 64, 64)` uses a thinner axial block for typical anisotropic stacks. |
+| `block_overlap`, `correlation_upsample`, `min_correlation` | *(correlation)* Same meaning as the 2-D corrector (see above). |
+| `voxel_size` | Optional physical voxel size `(z, y, x)` in any consistent unit (e.g. µm). When given, `validate()` additionally reports residuals in physical units (`mean_error_physical` etc.). For `method="beads"` it also makes bead matching physically isotropic. Does **not** change the unit of `match_max_distance`, which is always in voxels. `None` ⇒ voxel-unit residuals only. |
 
 The fitted transform always lives in **voxel space**, so the correction is correct regardless of `voxel_size`; that argument only affects matching robustness and residual reporting.
 
@@ -298,7 +324,7 @@ The fitted transform always lives in **voxel space**, so the correction is corre
 
 ## `generate_beads_image_3d`
 
-```python
+``python
 from microcal import generate_beads_image_3d
 
 volume, metadata = generate_beads_image_3d(
@@ -315,7 +341,7 @@ volume, metadata = generate_beads_image_3d(
     snr: float = 20.0,
     seed: int | None = 42,
 ) -> tuple[NDArray, dict]
-```
+``
 
 The 3-D counterpart of `generate_beads_image`. Renders beads with an anisotropic Gaussian PSF and warps each channel by a per-channel 3-D affine about the volume centre. Returns a `(C, Z, Y, X)` uint array and a metadata dict (`centers` is `(N, 3)` in `(z, y, x)`).
 
@@ -326,3 +352,46 @@ The 3-D counterpart of `generate_beads_image`. Renders beads with an anisotropic
 | `shifts` | Per-channel `(dz, dy, dx)` translation in voxels |
 | `rotations` | Per-channel rotation in degrees: a scalar (about the optical/z axis) or a `(rz, ry, rx)` Euler triple |
 | `scales` | Per-channel `(sz, sy, sx)` anisotropic scale |
+
+---
+
+## `generate_structures_image` / `generate_structures_image_3d`
+
+``python
+from microcal import generate_structures_image, generate_structures_image_3d
+
+image, metadata = generate_structures_image(
+    n_channels: int = 2,
+    shape: tuple[int, int] = (512, 512),                    # (H, W)
+    structure_scale: float = 8.0,
+    contour_width: float = 0.3,
+    structure_intensity: float = 60.0,
+    bit_depth: int = 8,
+    shifts: list[tuple[float, float]] | None = None,        # (dy, dx)
+    rotations: list[float] | None = None,
+    scales: list[tuple[float, float]] | None = None,        # (sy, sx)
+    offset: int = 10,
+    snr: float = 20.0,
+    seed: int | None = 42,
+    background: float = 0.0,
+) -> tuple[NDArray, dict]
+``
+
+Synthetic multi-channel **continuous-structure** images for exercising the
+marker-free `method="correlation"` path. Unlike `generate_beads_image`, the
+signal is a continuous filament/membrane-like network — the bright level-set
+contours of a smoothed random field — with no isolated point maxima, mimicking a
+sample where the same construct is stained in several colours. Per-channel
+`shifts` / `rotations` / `scales` / `snr` / `background` behave exactly as in
+`generate_beads_image`.
+
+| Parameter | Meaning |
+| --- | --- |
+| `structure_scale` | Smoothing σ of the underlying random field (px; per-axis tuple in 3-D). Larger ⇒ coarser/thicker structures. |
+| `contour_width` | Width of the bright contours as a fraction of the field's standard deviation. Larger ⇒ denser, thicker structures. |
+| `structure_intensity` | Peak structure intensity as a percentage of the full dynamic range (0–100). |
+
+`generate_structures_image_3d` is the volumetric counterpart, returning a
+`(C, Z, Y, X)` array. Its signature matches the 3-D bead generator
+(`shape=(32, 256, 256)`, `structure_scale=(3.0, 8.0, 8.0)`, `(dz, dy, dx)` shifts,
+scalar-or-Euler `rotations`, `(sz, sy, sx)` scales).

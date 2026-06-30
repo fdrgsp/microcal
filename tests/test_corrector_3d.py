@@ -563,6 +563,19 @@ def test_crop_to_valid_empty_mask_returns_input() -> None:
     assert out.shape == arr.shape
 
 
+def test_largest_valid_box_3d_excludes_invalid_planes_and_borders() -> None:
+    """The 3-D box must drop invalid z-planes / borders and stay fully valid."""
+    mask = np.ones((10, 20, 20), dtype=bool)
+    mask[0] = False  # an invalid z-plane (e.g. large axial shift)
+    mask[:, :3, :] = False  # an invalid y-border
+    mask[:, :, -2:] = False  # an invalid x-border
+    box = ChromaticShiftCorrector3D._largest_valid_box(mask)
+    assert mask[box].all()
+    assert box[0].start >= 1  # dropped the bad z-plane
+    assert box[1].start >= 3  # dropped the y-border
+    assert box[2].stop <= 18  # dropped the x-border
+
+
 # ---------------------------------------------------------------------------
 # generate_beads_image_3d — validation and defaults
 # ---------------------------------------------------------------------------

@@ -73,6 +73,7 @@ class ChromaticShiftCorrector(_BaseChromaticShiftCorrector):
         *,
         reference_channel: int = 0,
         transform_type: str = "affine",
+        method: str = "beads",
         smooth_sigma: float = 2.0,
         min_distance: int = 10,
         threshold_rel: float = 0.1,
@@ -80,41 +81,75 @@ class ChromaticShiftCorrector(_BaseChromaticShiftCorrector):
         min_pairs: int = 4,
         subpixel_refine: bool = True,
         refine_radius: int = 5,
+        block_size: int | tuple[int, int] = 128,
+        block_overlap: float = 0.5,
+        correlation_upsample: int = 10,
+        min_correlation: float = 0.1,
         verbose: bool = False,
     ) -> CorrectionResult:
         """
-        Estimate the chromatic shift from a multi-channel bead image.
+        Estimate the chromatic shift from a multi-channel calibration image.
+
+        Two correspondence strategies are available via `method`:
+
+        * `"beads"` (default) — detect discrete sub-resolution beads and match
+          them between channels.  Requires a sparse bead sample.
+        * `"correlation"` — marker-free block phase correlation.  Tiles the
+          image and measures each tile's sub-pixel shift by FFT cross-correlation,
+          so it works on **continuous structures** stained in several colours
+          (e.g. mitochondria), where bead detection finds nothing.
+
+        Both strategies feed the same RANSAC transform fit, so the output (one
+        affine matrix per channel) and `apply` / `validate` / `save` are
+        identical.
 
         Parameters
         ----------
         bead_stack : NDArray, shape (C, H, W)
-            Multi-channel bead image (float or uint).
+            Multi-channel calibration image (float or uint).
         reference_channel : int
             Channel index used as the geometric reference.  All other channels
             are registered to it.  Default 0.
         transform_type : str
             Type of transform to fit: 'affine' (default), 'similarity',
             'euclidean', or 'translation'.
+        method : str
+            Correspondence strategy: `"beads"` (default) or `"correlation"`.
         smooth_sigma : float
-            Sigma (px) of the Gaussian pre-smoothing applied before peak
-            finding.  Should match the apparent bead radius.  Default 2.
+            (`method="beads"`) Sigma (px) of the Gaussian pre-smoothing applied
+            before peak finding.  Should match the apparent bead radius.  Default 2.
         min_distance : int
-            Minimum pixel distance between two accepted peaks.  Default 10 px.
+            (`method="beads"`) Minimum pixel distance between two accepted
+            peaks.  Default 10 px.
         threshold_rel : float
-            Minimum peak intensity as a fraction of the image maximum, after
-            Gaussian smoothing.  Default 0.1.
+            (`method="beads"`) Minimum peak intensity as a fraction of the
+            image maximum, after Gaussian smoothing.  Default 0.1.
         match_max_distance : float
-            Maximum distance (px) for a valid bead pair.  Default 10 px.
+            (`method="beads"`) Maximum distance (px) for a valid bead pair.
+            Default 10 px.
         min_pairs : int
-            Minimum matched pairs required before fitting the transform.  Below
-            this threshold the corrector falls back to translation-only.
-            Default 4.
+            Minimum matched pairs (beads or correlation blocks) required before
+            fitting the transform.  Below this the corrector falls back to
+            translation-only.  Default 4.
         subpixel_refine : bool
-            If True (default), refine each pixel-level peak to sub-pixel
-            accuracy using an intensity-weighted centroid.
+            (`method="beads"`) If True (default), refine each pixel-level peak
+            to sub-pixel accuracy using an intensity-weighted centroid.
         refine_radius : int
-            Half-width (px) of the patch used for centroid refinement.
-            Default 5.
+            (`method="beads"`) Half-width (px) of the centroid-refinement
+            patch.  Default 5.
+        block_size : int or (by, bx)
+            (`method="correlation"`) Edge length (px) of each correlation
+            block; a tuple sets a different size per axis.  Default 128.
+        block_overlap : float
+            (`method="correlation"`) Fractional overlap of adjacent blocks, in
+            `[0, 1)`.  Default 0.5 (50 %).
+        correlation_upsample : int
+            (`method="correlation"`) Up-sampling factor for sub-pixel phase
+            correlation (skimage `upsample_factor`).  Default 10.
+        min_correlation : float
+            (`method="correlation"`) Minimum normalised cross-correlation
+            quality (`1 - error`, in `[0, 1]`) for a block to be used; flat
+            or poorly-correlated blocks below this are skipped.  Default 0.1.
         verbose : bool
             If True, emit progress logs.  Default False.
 
@@ -124,12 +159,12 @@ class ChromaticShiftCorrector(_BaseChromaticShiftCorrector):
             Contains one ChannelTransform per non-reference channel, plus
             visualisation arrays always populated:
 
-            * ``result.detection_image`` — ``(2*C, H, W)`` float32 with
+            * `result.detection_image` — `(2*C, H, W)` float32 with
               normalised channel images and filled-disk bead masks interleaved:
-              ``[img_ch0, beads_ch0, img_ch1, beads_ch1, ...]``.
-            * ``result.pairs_image`` — ``(H, W)`` int32 label image where
+              `[img_ch0, beads_ch0, img_ch1, beads_ch1, ...]`.
+            * `result.pairs_image` — `(H, W)` int32 label image where
               every bead in a matched group shares the same non-zero integer.
-              Display with a Glasbey LUT (e.g. ``ndv.imshow(result.pairs_image)``).
+              Display with a Glasbey LUT (e.g. `ndv.imshow(result.pairs_image)`).
         """
         # Store params so validate(), save(), and private helpers can read them.
         self.transform_type = transform_type
@@ -142,6 +177,9 @@ class ChromaticShiftCorrector(_BaseChromaticShiftCorrector):
         self.refine_radius = refine_radius
         self.voxel_size = None
         self.verbose = verbose
+        self._store_correlation_params(
+            method, block_size, block_overlap, correlation_upsample, min_correlation
+        )
 
         self._setup_logger(verbose)
 
@@ -173,12 +211,12 @@ class ChromaticShiftCorrector(_BaseChromaticShiftCorrector):
         image_or_stack : NDArray (C, H, W) | list[NDArray] | list[str]
             The multi-channel image to correct.  Accepted forms:
 
-            * ``NDArray`` shape ``(C, H, W)`` — channel-first stack.
-            * ``list[NDArray]`` — one 2-D ``(H, W)`` array per channel; stacked
+            * `NDArray` shape `(C, H, W)` — channel-first stack.
+            * `list[NDArray]` — one 2-D `(H, W)` array per channel; stacked
               in list order.  Useful when channels come from separate
-              ``tifffile.imread`` calls.
-            * ``list[str]`` — one file path per channel; each file is read with
-              ``tifffile.imread``.
+              `tifffile.imread` calls.
+            * `list[str]` — one file path per channel; each file is read with
+              `tifffile.imread`.
 
         result : CorrectionResult or None
             Use a previously computed result.  Defaults to the result stored
@@ -240,10 +278,7 @@ class ChromaticShiftCorrector(_BaseChromaticShiftCorrector):
                 valid_mask &= ch_valid > 0.5
 
         if crop:
-            rows = np.where(valid_mask.any(axis=1))[0]
-            cols = np.where(valid_mask.any(axis=0))[0]
-            if rows.size and cols.size:
-                corrected = corrected[:, rows[0] : rows[-1] + 1, cols[0] : cols[-1] + 1]
+            corrected = self._crop_to_valid(corrected, valid_mask)
 
         return corrected.astype(orig_dtype)
 

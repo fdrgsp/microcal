@@ -1,5 +1,22 @@
 # Internal pipeline — step by step
 
+`microcal` estimates the per-channel chromatic-shift transform with one of **two
+correspondence methods**, selected through `measure(method=...)`:
+
+- **`method="beads"` (default)** — for a good-quality, sparse **multi-colour
+  bead** sample: detect isolated beads and match them between channels. This is
+  the method walked through in **Steps 1–7** below.
+- **`method="correlation"`** — marker-free **block phase correlation** for a
+  **continuous structure stained in several colours** (the same target imaged in
+  two channels, e.g. mitochondria); it also works on beads. It reuses Step 1 and
+  Steps 5–7 unchanged and only replaces the correspondence search (Steps 2–4); it
+  is documented in the final section,
+  [Correlation-based correspondence](#correlation-based-correspondence-methodcorrelation).
+
+Both methods produce the same `(src, dst)` matched-point arrays, feed the same
+RANSAC fit, and yield one affine matrix per channel, so `apply()` / `validate()`
+/ `save()` / `from_json()` behave identically.
+
 This document walks through exactly what `ChromaticShiftCorrector.measure()` does
 internally, in order, with small worked numerical examples for each step. It
 mirrors the implementation in
@@ -402,3 +419,81 @@ The JSON written by `save()` includes an `"ndim": 3` field (or `2` for the 2D
 class). `from_json()` checks this field and raises a `ValueError` if it does not
 match the class — preventing a 2D calibration from being silently loaded into a
 3D corrector (or vice versa).
+
+---
+
+## Correlation-based correspondence (`method="correlation"`)
+
+The bead pipeline above needs a **sparse sample of isolated point sources**:
+Steps 2–4 detect bead maxima and match them between channels. If the calibration
+sample is instead a **continuous structure stained in several colours** (e.g.
+mitochondria or a membrane construct imaged in two channels), there are no
+isolated maxima to localise and bead detection breaks down.
+
+`measure(method="correlation")` replaces **Steps 2–4** with marker-free *block
+phase correlation*. Step 1 (normalisation) and Steps 5–7 (RANSAC fit, apply,
+validate) are **unchanged** — the correlation step just produces the same
+`(src, dst)` matched-point arrays that RANSAC consumes, so the output is still
+one affine matrix per channel and `apply()` / `save()` / `from_json()` behave
+identically. It works for any structured sample in both 2D and 3D, because phase
+correlation is N-dimensional.
+
+### Replacement for Step 2–4 — block phase correlation
+
+After both channels are normalised (Step 1), `_correlation_correspondences`
+turns the reference and moving images into matched point pairs:
+
+1. **Global coarse alignment.** A single `phase_cross_correlation(ref, mov)` over
+   the whole image gives the integer global shift, and the moving image is
+   pre-shifted by it (`scipy.ndimage.shift`). This keeps each block's residual
+   shift small — phase correlation is only reliable for shifts below about half
+   the block size.
+
+2. **Block grid.** The image is tiled into overlapping blocks of size
+   `block_size` (scalar or per-axis) with fractional `block_overlap` (e.g. 0.5
+   for 50 %). The far edge is always covered by snapping the last block flush to
+   the border.
+
+3. **Per-block sub-pixel shift.** For each block, the reference and pre-aligned
+   moving patches are multiplied by a Hann window (to suppress FFT wrap-around)
+   and fed to `phase_cross_correlation(..., upsample_factor=correlation_upsample,
+   normalization=None)`. The Hann window is essential: without it, phase
+   correlation on smooth/low-frequency blocks collapses to a zero shift.
+
+4. **Quality filtering.** A block is discarded if it is nearly flat (its
+   standard deviation is ~0) or if its normalised cross-correlation quality
+   `1 − error` falls below `min_correlation`. This drops background and
+   uncorrelated regions before fitting; RANSAC (Step 5) then removes any
+   remaining outliers (e.g. moving structures or mismatched tiles).
+
+5. **Correspondence.** Each surviving block contributes one pair: the reference
+   point is the block centre `c`; the moving point is `c − total_shift`, where
+   `total_shift = coarse_shift + residual`. This matches the bead convention
+   (`src` = reference, `dst` = moving), so Step 5's RANSAC fits the same
+   moving→reference transform.
+
+**Worked example:** a 256×256 image with `block_size=64`, `block_overlap=0.5`
+gives a step of 32 px → block origins `0, 32, 64, …, 192` along each axis (≈ 49
+blocks). On a structured sample with a true shift of `(3.5, −2.0)` px plus a 1°
+rotation, the global step recovers `(3, −2)`, each block's residual recovers the
+sub-pixel remainder and the local rotation contribution, and RANSAC fits an
+affine that reduces the channel misalignment from ≈ 5 px to ≈ 0.1 px.
+
+### Correlation parameters
+
+| Parameter | Meaning |
+| --- | --- |
+| `block_size` | Block edge length (scalar or per-axis tuple). Larger ⇒ more robust per-block shift but fewer correspondences. 3D defaults to `(16, 64, 64)` (thinner axial block). |
+| `block_overlap` | Fractional overlap of adjacent blocks in `[0, 1)`. Higher ⇒ denser correspondences. |
+| `correlation_upsample` | `upsample_factor` for sub-pixel phase correlation. |
+| `min_correlation` | Minimum block correlation quality `1 − error` in `[0, 1]`; flat / poorly-correlated blocks are skipped. |
+
+### Step 7 — validation for the correlation method
+
+`validate()` cannot re-detect beads on a continuous sample. Instead, for
+`method="correlation"` it applies the fitted correction to the calibration stack
+and re-runs block phase correlation between the reference and each **corrected**
+channel. A good correction drives the residual per-block shift toward zero, so
+the reported `mean_error` / `median_error` / `max_error` / `n_pairs` (and, in 3D,
+the per-axis and physical-unit residuals) summarise the leftover misalignment in
+the same way as the bead validation.
