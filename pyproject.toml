@@ -94,4 +94,4 @@ ignore_missing_imports = true
 ignore = [".pre-commit-config.yaml", ".ruff_cache/**/*", "tests/**/*"]
 
 [tool.typos.default]
-extend-ignore-identifiers-re = ["ND=ND", "thr=thr", "iy=iy"]
+extend-ignore-identifiers-re = ["^NDArray$", "^thr$", "^iy$"]
