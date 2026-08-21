@@ -349,7 +349,7 @@ def test_three_channel_apply_shape(bead_3ch: tuple[np.ndarray, dict]) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(  # type: ignore[misc]
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     "rms,expected",
     [
         (0.123, "0.123px"),
@@ -513,7 +513,7 @@ def test_validate_zero_pairs() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(  # type: ignore[misc]
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     "ref,mov",
     [
         (np.empty((0, 2)), np.array([[10.0, 20.0]])),
@@ -559,7 +559,7 @@ _BASE_GEN_KWARGS: dict = {
 }
 
 
-@pytest.mark.parametrize(  # type: ignore[misc]
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     "override,exc_type,match",
     [
         ({"bead_intensity": 0.0}, ValueError, "bead_intensity"),
