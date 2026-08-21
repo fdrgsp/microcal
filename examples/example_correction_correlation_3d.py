@@ -60,9 +60,9 @@ results = csc.measure(
     reference_channel=0,
     method="correlation",
     block_size=(16, 64, 64),  # (bz, by, bx)
-    block_overlap=0.5,        # 50 % overlap between adjacent blocks
+    block_overlap=0.5,  # 50 % overlap between adjacent blocks
     correlation_upsample=10,
-    min_correlation=0.1,      # drop flat / poorly-correlated blocks
+    min_correlation=0.1,  # drop flat / poorly-correlated blocks
     voxel_size=(scale_z, scale_y, scale_x),  # optional (z, y, x) in microns
     verbose=True,
 )

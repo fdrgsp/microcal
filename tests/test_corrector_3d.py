@@ -505,7 +505,7 @@ def test_full_euler_rotation_recovers() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(  # type: ignore[misc]
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     "ref,mov",
     [
         (np.empty((0, 3)), np.array([[1.0, 2.0, 3.0]])),
@@ -593,7 +593,7 @@ _BASE_GEN_KW: dict = {
 }
 
 
-@pytest.mark.parametrize(  # type: ignore[misc]
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     "override,exc_type,match",
     [
         ({"bead_intensity": 0.0}, ValueError, "bead_intensity"),

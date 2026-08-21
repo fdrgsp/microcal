@@ -50,10 +50,10 @@ results = csc.measure(
     struct_img,
     reference_channel=0,
     method="correlation",
-    block_size=128,        # block edge in px (tuple for per-axis sizes)
-    block_overlap=0.5,     # 50 % overlap between adjacent blocks
+    block_size=128,  # block edge in px (tuple for per-axis sizes)
+    block_overlap=0.5,  # 50 % overlap between adjacent blocks
     correlation_upsample=10,
-    min_correlation=0.1,   # drop flat / poorly-correlated blocks
+    min_correlation=0.1,  # drop flat / poorly-correlated blocks
     verbose=True,
 )
 

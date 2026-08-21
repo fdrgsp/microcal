@@ -212,7 +212,7 @@ def test_measure_unknown_method_raises(struct_2ch: tuple[np.ndarray, dict]) -> N
         sc.measure(img, method="bogus")
 
 
-@pytest.mark.parametrize("overlap", [-0.1, 1.0, 1.5])  # type: ignore[misc]
+@pytest.mark.parametrize("overlap", [-0.1, 1.0, 1.5])  # type: ignore[untyped-decorator]
 def test_measure_bad_block_overlap_raises(
     struct_2ch: tuple[np.ndarray, dict], overlap: float
 ) -> None:
@@ -257,7 +257,7 @@ _BASE_KWARGS: dict = {
 }
 
 
-@pytest.mark.parametrize(  # type: ignore[misc]
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     "override,exc_type,match",
     [
         ({"structure_intensity": 0.0}, ValueError, "structure_intensity"),
