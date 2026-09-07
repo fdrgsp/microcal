@@ -67,7 +67,7 @@ import tifffile
 from microcal import ChromaticShiftCorrector
 
 # 1. Load a multi-channel bead image (C, H, W)
-bead_img = tifffile.imread("beads.tiff")   # e.g. shape (2, 512, 512), uint16
+bead_img = tifffile.imread("beads.tiff")  # e.g. shape (2, 512, 512), uint16
 
 # 2. Measure the chromatic shift — tune detection parameters here
 csc = ChromaticShiftCorrector()
@@ -89,7 +89,7 @@ result = csc.measure(
 val = csc.validate()
 
 # 4. Apply the correction to any sample image
-sample_img = tifffile.imread("sample.tiff")   # same number of channels
+sample_img = tifffile.imread("sample.tiff")  # same number of channels
 corrected = csc.apply(sample_img, crop=True)
 tifffile.imwrite("sample_corrected.tiff", corrected)
 
