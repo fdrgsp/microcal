@@ -166,12 +166,12 @@ from microcal import CorrectionResult
 Returned by `measure()`. All fields are readable directly.
 
 ```python
-result.reference_channel   # int — index of the reference channel
-result.transforms          # dict[int, ChannelTransform] — one entry per non-reference channel
-result.detection_image     # NDArray (2*C, H, W) float32 — interleaved normalised channel
-                           #   images and filled-disk bead masks: [img_ch0, beads_ch0, ...]
-result.pairs_image         # NDArray (H, W) int32 — label image; beads in the same matched
-                           #   group share the same non-zero integer (display with Glasbey LUT)
+result.reference_channel  # int — index of the reference channel
+result.transforms  # dict[int, ChannelTransform] — one entry per non-reference channel
+result.detection_image  # NDArray (2*C, H, W) float32 — interleaved normalised channel
+#   images and filled-disk bead masks: [img_ch0, beads_ch0, ...]
+result.pairs_image  # NDArray (H, W) int32 — label image; beads in the same matched
+#   group share the same non-zero integer (display with Glasbey LUT)
 ```
 
 Printing a `CorrectionResult` shows the RMS and 3×3 transform matrix for each channel:
@@ -194,11 +194,11 @@ print(result)
 from microcal import ChannelTransform
 
 ct = result.transforms[1]
-ct.channel           # int — channel index
-ct.transform         # skimage.transform.AffineTransform — 3×3 matrix in (x, y) space
+ct.channel  # int — channel index
+ct.transform  # skimage.transform.AffineTransform — 3×3 matrix in (x, y) space
 ct.transform.params  # NDArray — the 3×3 homogeneous matrix
-ct.rms_residual      # float | None — RMS of inlier bead pairs after fitting, in pixels
-ct.n_pairs           # int — number of bead pairs used
+ct.rms_residual  # float | None — RMS of inlier bead pairs after fitting, in pixels
+ct.n_pairs  # int — number of bead pairs used
 ```
 
 The 3×3 matrix maps `[x_ch, y_ch, 1]ᵀ → [x_ref, y_ref, 1]ᵀ` where `(x, y) = (col, row)`.
